@@ -147,6 +147,31 @@ event.type == 'PromotionFailed' && hasPrefix(event.promotionName, 'prod.')
 event.message contains 'error-rate'
 ```
 
+### Custom messages (`output`)
+
+By default, message channels render a standard summary of the event. Set
+`output` on a channel reference to replace it. `${{ }}` blocks contain
+expr-lang expressions evaluated against the same `event` object as `when`:
+
+```yaml
+apiVersion: kargo-event-router.io/v1alpha1
+kind: EventRouter
+metadata:
+  name: promotion-started
+  namespace: kargo-demo
+spec:
+  types:
+  - PromotionCreated
+  channels:
+  - name: devops-team-slack
+    kind: MessageChannel
+    output: "Kargo has kicked off promotion to stage: ${{ event.stageName }}."
+```
+
+`output` is per channel reference, so one router can deliver a custom
+message to one channel and the default rendering to another. Webhook
+channels always receive the full structured event and ignore `output`.
+
 ### Event types
 
 `PromotionCreated`, `PromotionSucceeded`, `PromotionFailed`,

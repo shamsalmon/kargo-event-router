@@ -33,10 +33,17 @@ func newSlackSink(token, channel string, timeout time.Duration) Sink {
 	}
 }
 
-func (s *slackSink) Send(ctx context.Context, evt *payload.CloudEvent) error {
+func (s *slackSink) Send(
+	ctx context.Context,
+	evt *payload.CloudEvent,
+	text string,
+) error {
+	if text == "" {
+		text = messageText(evt)
+	}
 	body, err := json.Marshal(map[string]string{
 		"channel": s.channel,
-		"text":    messageText(evt),
+		"text":    text,
 	})
 	if err != nil {
 		return fmt.Errorf("error marshaling message: %w", err)

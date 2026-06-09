@@ -99,9 +99,41 @@ func TestSlackSinkSend(t *testing.T) {
 				apiURL:     srv.URL,
 				httpClient: newHTTPClient(5 * time.Second),
 			}
-			testCase.assert(t, s.Send(context.Background(), newTestCloudEvent()))
+			testCase.assert(
+				t,
+				s.Send(context.Background(), newTestCloudEvent(), ""),
+			)
 		})
 	}
+}
+
+func TestSlackSinkSendCustomText(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		require.NoError(t, err)
+		message := map[string]string{}
+		require.NoError(t, json.Unmarshal(body, &message))
+		require.Equal(
+			t,
+			"Kargo has kicked off promotion to stage: prod.",
+			message["text"],
+		)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	t.Cleanup(srv.Close)
+	s := &slackSink{
+		token:      "test-token",
+		channel:    "#deployments",
+		apiURL:     srv.URL,
+		httpClient: newHTTPClient(5 * time.Second),
+	}
+	require.NoError(t, s.Send(
+		context.Background(),
+		newTestCloudEvent(),
+		"Kargo has kicked off promotion to stage: prod.",
+	))
 }
 
 func TestMessageText(t *testing.T) {

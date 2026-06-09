@@ -68,6 +68,19 @@ spec:
                       description: Name is the name of the referenced channel resource.
                       minLength: 1
                       type: string
+                    output:
+                      description: |-
+                        Output is an optional template for the message delivered to this
+                        channel, overriding the default rendering. ${{ }} blocks contain
+                        expr-lang expressions evaluated against the same `event` object as the
+                        When field, e.g.:
+
+                          Kargo has kicked off promotion to stage: ${{ event.stageName }}.
+
+                        Output applies to channels that deliver human-readable messages (e.g.
+                        Slack); webhook channels always receive the full structured event and
+                        ignore it.
+                      type: string
                   required:
                   - name
                   type: object

@@ -2,6 +2,7 @@ package dispatch
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/expr-lang/expr"
@@ -9,6 +10,41 @@ import (
 
 	kargoapi "github.com/akuity/kargo/api/v1alpha1"
 )
+
+// templateExprRegex matches ${{ ... }} blocks in output templates.
+var templateExprRegex = regexp.MustCompile(`\$\{\{(.*?)\}\}`)
+
+// renderTemplate renders an output template against the given Kubernetes
+// Event. Each ${{ ... }} block is evaluated as an expr-lang expression with
+// the same `event` object available to when expressions, and replaced with
+// the result.
+func renderTemplate(template string, evt *corev1.Event) (string, error) {
+	env := map[string]any{"event": exprEvent(evt)}
+	var renderErr error
+	rendered := templateExprRegex.ReplaceAllStringFunc(
+		template,
+		func(match string) string {
+			if renderErr != nil {
+				return match
+			}
+			expression := strings.TrimSpace(
+				templateExprRegex.FindStringSubmatch(match)[1],
+			)
+			result, err := expr.Eval(expression, env)
+			if err != nil {
+				renderErr = fmt.Errorf(
+					"error evaluating expression %q: %w", expression, err,
+				)
+				return match
+			}
+			return fmt.Sprint(result)
+		},
+	)
+	if renderErr != nil {
+		return "", renderErr
+	}
+	return rendered, nil
+}
 
 // evalWhen evaluates the given expr-lang expression against the given
 // Kubernetes Event and returns whether it matched. The expression sees an

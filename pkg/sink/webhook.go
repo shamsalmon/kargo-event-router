@@ -44,7 +44,14 @@ func newWebhookSink(url string, signingKey []byte, timeout time.Duration) Sink {
 	}
 }
 
-func (w *webhookSink) Send(ctx context.Context, evt *payload.CloudEvent) error {
+// Send delivers the structured event; the pre-rendered text is ignored, as
+// webhook consumers receive the full event and can render their own
+// messages.
+func (w *webhookSink) Send(
+	ctx context.Context,
+	evt *payload.CloudEvent,
+	_ string,
+) error {
 	body, err := json.Marshal(evt)
 	if err != nil {
 		return fmt.Errorf("error marshaling event: %w", err)

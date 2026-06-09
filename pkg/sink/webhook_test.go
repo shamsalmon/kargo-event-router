@@ -84,7 +84,10 @@ func TestWebhookSinkSend(t *testing.T) {
 			srv := httptest.NewServer(testCase.handler)
 			t.Cleanup(srv.Close)
 			s := newWebhookSink(srv.URL, testCase.signingKey, 5*time.Second)
-			testCase.assert(t, s.Send(context.Background(), newTestCloudEvent()))
+			testCase.assert(
+				t,
+				s.Send(context.Background(), newTestCloudEvent(), ""),
+			)
 		})
 	}
 }
@@ -96,5 +99,5 @@ func TestWebhookSinkSendUnreachable(t *testing.T) {
 		nil,
 		time.Second,
 	)
-	require.Error(t, s.Send(context.Background(), newTestCloudEvent()))
+	require.Error(t, s.Send(context.Background(), newTestCloudEvent(), ""))
 }

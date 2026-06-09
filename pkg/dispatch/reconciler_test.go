@@ -36,6 +36,7 @@ type fakeSend struct {
 	channel    string
 	secretData map[string][]byte
 	event      *payload.CloudEvent
+	text       string
 }
 
 func (f *fakeSinkFactory) new(
@@ -56,7 +57,11 @@ type fakeSink struct {
 	secretData map[string][]byte
 }
 
-func (s *fakeSink) Send(_ context.Context, evt *payload.CloudEvent) error {
+func (s *fakeSink) Send(
+	_ context.Context,
+	evt *payload.CloudEvent,
+	text string,
+) error {
 	if err := s.factory.errByChannel[s.channel]; err != nil {
 		return err
 	}
@@ -64,6 +69,7 @@ func (s *fakeSink) Send(_ context.Context, evt *payload.CloudEvent) error {
 		channel:    s.channel,
 		secretData: s.secretData,
 		event:      evt,
+		text:       text,
 	})
 	return nil
 }
@@ -296,6 +302,57 @@ func TestReconcile(t *testing.T) {
 					"router-a/channel-a,router-a/channel-b",
 					evt.Annotations[annotationKeyRoutedTo],
 				)
+			},
+		},
+		{
+			name: "output template renders the delivered text",
+			objects: []client.Object{
+				newTestEvent(),
+				newTestRouter(
+					"router-a",
+					[]string{"channel-a"},
+					func(router *v1alpha1.EventRouter) {
+						router.Spec.Channels[0].Output =
+							"Promotion to stage: ${{ event.stageName }} failed."
+					},
+				),
+				newTestChannel("channel-a"),
+			},
+			assert: func(
+				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
+			) {
+				require.NoError(t, err)
+				require.Len(t, f.sends, 1)
+				require.Equal(
+					t, "Promotion to stage: prod failed.", f.sends[0].text,
+				)
+			},
+		},
+		{
+			name: "broken output template skips delivery without error",
+			objects: []client.Object{
+				newTestEvent(),
+				newTestRouter(
+					"router-a",
+					[]string{"channel-a"},
+					func(router *v1alpha1.EventRouter) {
+						router.Spec.Channels[0].Output = "${{ not valid (( }}"
+					},
+				),
+				newTestChannel("channel-a"),
+			},
+			assert: func(
+				t *testing.T, c client.Client, f *fakeSinkFactory, err error,
+			) {
+				require.NoError(t, err)
+				require.Empty(t, f.sends)
+				evt := &corev1.Event{}
+				require.NoError(t, c.Get(
+					context.Background(),
+					client.ObjectKey{Namespace: testProject, Name: "test-event"},
+					evt,
+				))
+				require.Empty(t, evt.Annotations[annotationKeyRoutedTo])
 			},
 		},
 		{

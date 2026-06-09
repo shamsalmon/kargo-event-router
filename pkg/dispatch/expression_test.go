@@ -88,6 +88,74 @@ func TestEvalWhen(t *testing.T) {
 	}
 }
 
+func TestRenderTemplate(t *testing.T) {
+	t.Parallel()
+
+	testEvent := &corev1.Event{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: "kargo-demo",
+			Annotations: map[string]string{
+				kargoapi.AnnotationKeyEventStageName:    "production",
+				kargoapi.AnnotationKeyEventFreightAlias: "salty-seahorse",
+			},
+		},
+		Reason: string(kargoapi.EventTypePromotionCreated),
+	}
+
+	testCases := []struct {
+		name     string
+		template string
+		assert   func(*testing.T, string, error)
+	}{
+		{
+			name:     "no expressions",
+			template: "A promotion happened.",
+			assert: func(t *testing.T, rendered string, err error) {
+				require.NoError(t, err)
+				require.Equal(t, "A promotion happened.", rendered)
+			},
+		},
+		{
+			name:     "single expression",
+			template: "Kargo has kicked off promotion to stage: ${{ event.stageName }}.",
+			assert: func(t *testing.T, rendered string, err error) {
+				require.NoError(t, err)
+				require.Equal(
+					t,
+					"Kargo has kicked off promotion to stage: production.",
+					rendered,
+				)
+			},
+		},
+		{
+			name:     "multiple expressions",
+			template: "${{ event.type }}: ${{ event.freightAlias }} -> ${{ event.stageName }}",
+			assert: func(t *testing.T, rendered string, err error) {
+				require.NoError(t, err)
+				require.Equal(
+					t,
+					"PromotionCreated: salty-seahorse -> production",
+					rendered,
+				)
+			},
+		},
+		{
+			name:     "broken expression",
+			template: "${{ not valid (( }}",
+			assert: func(t *testing.T, _ string, err error) {
+				require.Error(t, err)
+			},
+		},
+	}
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			rendered, err := renderTemplate(testCase.template, testEvent)
+			testCase.assert(t, rendered, err)
+		})
+	}
+}
+
 func TestCamelCase(t *testing.T) {
 	t.Parallel()
 	testCases := map[string]string{

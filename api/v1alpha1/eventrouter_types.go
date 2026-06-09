@@ -64,6 +64,19 @@ type ChannelReference struct {
 	// +kubebuilder:validation:Enum=MessageChannel
 	// +optional
 	Kind string `json:"kind,omitempty"`
+	// Output is an optional template for the message delivered to this
+	// channel, overriding the default rendering. ${{ }} blocks contain
+	// expr-lang expressions evaluated against the same `event` object as the
+	// When field, e.g.:
+	//
+	//   Kargo has kicked off promotion to stage: ${{ event.stageName }}.
+	//
+	// Output applies to channels that deliver human-readable messages (e.g.
+	// Slack); webhook channels always receive the full structured event and
+	// ignore it.
+	//
+	// +optional
+	Output string `json:"output,omitempty"`
 }
 
 // EventRouterStatus describes the current status of an EventRouter.

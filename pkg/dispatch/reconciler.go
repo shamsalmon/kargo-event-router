@@ -152,7 +152,11 @@ func (r *reconciler) Reconcile(
 			continue
 		}
 		for _, channel := range router.Spec.Channels {
-			d := delivery{router: router.Name, channel: channel.Name}
+			d := delivery{
+				router:  router.Name,
+				channel: channel.Name,
+				output:  channel.Output,
+			}
 			if !slices.Contains(delivered, d.key()) {
 				pending = append(pending, d)
 			}
@@ -175,8 +179,25 @@ func (r *reconciler) Reconcile(
 	// does not re-deliver to channels that already succeeded.
 	var errs []error
 	for _, d := range pending {
+		// An empty text means the channel's sink uses its default rendering.
+		var text string
+		if d.output != "" {
+			var renderErr error
+			if text, renderErr = renderTemplate(d.output, evt); renderErr != nil {
+				// A broken output template cannot be fixed by retrying. Log
+				// it and skip this delivery; it will be re-evaluated when
+				// the next matching event occurs.
+				logger.Error(
+					renderErr,
+					"error rendering output template; skipping delivery",
+					"router", d.router,
+					"channel", d.channel,
+				)
+				continue
+			}
+		}
 		var channelType string
-		channelType, err = r.deliver(ctx, evt.Namespace, d.channel, ce)
+		channelType, err = r.deliver(ctx, evt.Namespace, d.channel, ce, text)
 		result := resultSuccess
 		if err != nil {
 			result = resultError
@@ -214,6 +235,7 @@ func (r *reconciler) Reconcile(
 type delivery struct {
 	router  string
 	channel string
+	output  string
 }
 
 // key returns the representation of the delivery recorded in the routed-to
@@ -236,13 +258,16 @@ func (r *reconciler) isRoutable(obj client.Object) bool {
 	return r.nowFn().Sub(eventTime(evt)) <= r.cfg.MaxEventAge
 }
 
-// deliver sends the given event to the named MessageChannel. It returns the
-// channel's type (for metrics labeling) along with any delivery error.
+// deliver sends the given event to the named MessageChannel. text is the
+// rendered output template, or empty to use the sink's default rendering.
+// It returns the channel's type (for metrics labeling) along with any
+// delivery error.
 func (r *reconciler) deliver(
 	ctx context.Context,
 	namespace string,
 	channelName string,
 	ce *payload.CloudEvent,
+	text string,
 ) (string, error) {
 	channel := &v1alpha1.MessageChannel{}
 	if err := r.client.Get(
@@ -276,7 +301,7 @@ func (r *reconciler) deliver(
 	if err != nil {
 		return channelType, err
 	}
-	return channelType, s.Send(ctx, ce)
+	return channelType, s.Send(ctx, ce, text)
 }
 
 // typeOfChannel returns the metrics label value identifying the given

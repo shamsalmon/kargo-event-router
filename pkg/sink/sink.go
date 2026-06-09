@@ -25,7 +25,10 @@ const (
 // Sink delivers an event to an external destination.
 type Sink interface {
 	// Send delivers the given event, returning an error if delivery fails.
-	Send(ctx context.Context, evt *payload.CloudEvent) error
+	// text is a pre-rendered message for sinks that deliver human-readable
+	// messages; when empty, such sinks fall back to their default rendering.
+	// Sinks that deliver the structured event ignore it.
+	Send(ctx context.Context, evt *payload.CloudEvent, text string) error
 }
 
 // New returns the Sink described by the given MessageChannel. secretData is
