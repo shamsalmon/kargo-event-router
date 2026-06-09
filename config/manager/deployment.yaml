@@ -25,6 +25,9 @@ spec:
     metadata:
       labels:
         app.kubernetes.io/name: kargo-event-router
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8080"
     spec:
       serviceAccountName: kargo-event-router
       containers:
@@ -36,6 +39,8 @@ spec:
         - name: SEND_TIMEOUT
           value: 10s
         ports:
+        - name: metrics
+          containerPort: 8080
         - name: health
           containerPort: 8081
         livenessProbe:

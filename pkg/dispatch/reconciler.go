@@ -175,7 +175,20 @@ func (r *reconciler) Reconcile(
 	// does not re-deliver to channels that already succeeded.
 	var errs []error
 	for _, d := range pending {
-		if err = r.deliver(ctx, evt.Namespace, d.channel, ce); err != nil {
+		var channelType string
+		channelType, err = r.deliver(ctx, evt.Namespace, d.channel, ce)
+		result := resultSuccess
+		if err != nil {
+			result = resultError
+		}
+		deliveriesTotal.WithLabelValues(
+			evt.Namespace,
+			d.channel,
+			channelType,
+			evt.Reason,
+			result,
+		).Inc()
+		if err != nil {
 			errs = append(
 				errs,
 				fmt.Errorf("error delivering to channel %q: %w", d.channel, err),
@@ -223,21 +236,25 @@ func (r *reconciler) isRoutable(obj client.Object) bool {
 	return r.nowFn().Sub(eventTime(evt)) <= r.cfg.MaxEventAge
 }
 
-// deliver sends the given event to the named MessageChannel.
+// deliver sends the given event to the named MessageChannel. It returns the
+// channel's type (for metrics labeling) along with any delivery error.
 func (r *reconciler) deliver(
 	ctx context.Context,
 	namespace string,
 	channelName string,
 	ce *payload.CloudEvent,
-) error {
+) (string, error) {
 	channel := &v1alpha1.MessageChannel{}
 	if err := r.client.Get(
 		ctx,
 		client.ObjectKey{Namespace: namespace, Name: channelName},
 		channel,
 	); err != nil {
-		return fmt.Errorf("error getting MessageChannel: %w", err)
+		return channelTypeUnknown, fmt.Errorf(
+			"error getting MessageChannel: %w", err,
+		)
 	}
+	channelType := typeOfChannel(channel)
 	var secretData map[string][]byte
 	if ref := channelSecretRef(channel); ref != nil {
 		// Secrets in project namespaces are deliberately read with the
@@ -249,15 +266,29 @@ func (r *reconciler) deliver(
 			client.ObjectKey{Namespace: namespace, Name: ref.Name},
 			secret,
 		); err != nil {
-			return fmt.Errorf("error getting Secret %q: %w", ref.Name, err)
+			return channelType, fmt.Errorf(
+				"error getting Secret %q: %w", ref.Name, err,
+			)
 		}
 		secretData = secret.Data
 	}
 	s, err := r.newSinkFn(channel, secretData, r.cfg.SendTimeout)
 	if err != nil {
-		return err
+		return channelType, err
 	}
-	return s.Send(ctx, ce)
+	return channelType, s.Send(ctx, ce)
+}
+
+// typeOfChannel returns the metrics label value identifying the given
+// MessageChannel's destination type.
+func typeOfChannel(channel *v1alpha1.MessageChannel) string {
+	switch {
+	case channel.Spec.Webhook != nil:
+		return channelTypeWebhook
+	case channel.Spec.Slack != nil:
+		return channelTypeSlack
+	}
+	return channelTypeUnknown
 }
 
 // channelSecretRef returns the reference to the Secret the given

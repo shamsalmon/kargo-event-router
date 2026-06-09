@@ -210,10 +210,37 @@ echo -n "$BODY" | openssl dgst -sha256 -hmac "$SIGNING_KEY"
 | Environment variable | Default | Description |
 |---|---|---|
 | `MAX_EVENT_AGE` | `30m` | Events older than this are never delivered. Prevents replaying history when the controller (re)starts. |
-| `SEND_TIMEOUT` | `10s` | Per-request timeout for webhook deliveries. |
-| `METRICS_BIND_ADDRESS` | `0` (disabled) | Bind address for the Prometheus metrics endpoint. |
+| `SEND_TIMEOUT` | `10s` | Per-request timeout for deliveries. |
+| `METRICS_BIND_ADDRESS` | `:8080` | Bind address for the Prometheus metrics endpoint. Set to `0` to disable. |
 | `HEALTH_PROBE_BIND_ADDRESS` | `:8081` | Bind address for `/healthz` and `/readyz`. |
 | `ENABLE_LEADER_ELECTION` | `false` | Enable leader election when running more than one replica. |
+
+## Metrics
+
+Prometheus metrics are served on `METRICS_BIND_ADDRESS` at `/metrics` (the
+bundled Deployment carries `prometheus.io/scrape` annotations). In addition
+to the standard controller-runtime and Go runtime metrics:
+
+| Metric | Type | Labels | Description |
+|---|---|---|---|
+| `kargo_event_router_deliveries_total` | counter | `project`, `channel`, `channel_type` (`slack`\|`webhook`\|`unknown`), `event_type`, `result` (`success`\|`error`) | Every delivery attempt. |
+
+Useful queries:
+
+```promql
+# Messages sent successfully, by channel
+sum by (channel) (rate(kargo_event_router_deliveries_total{result="success"}[5m]))
+
+# Failed webhook deliveries
+sum by (project, channel) (rate(kargo_event_router_deliveries_total{channel_type="webhook", result="error"}[5m]))
+
+# Alert when any channel is failing
+rate(kargo_event_router_deliveries_total{result="error"}[10m]) > 0
+```
+
+Note that failed deliveries are retried with backoff, so a single event can
+contribute multiple `result="error"` increments (and eventually one
+`result="success"` if the destination recovers).
 
 ## Caveats
 

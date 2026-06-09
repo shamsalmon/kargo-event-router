@@ -22,7 +22,7 @@ import (
 )
 
 type serverConfig struct {
-	MetricsBindAddress     string `envconfig:"METRICS_BIND_ADDRESS" default:"0"`
+	MetricsBindAddress     string `envconfig:"METRICS_BIND_ADDRESS" default:":8080"`
 	HealthProbeBindAddress string `envconfig:"HEALTH_PROBE_BIND_ADDRESS" default:":8081"`
 	EnableLeaderElection   bool   `envconfig:"ENABLE_LEADER_ELECTION" default:"false"`
 }
