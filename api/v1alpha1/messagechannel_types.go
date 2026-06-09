@@ -55,27 +55,21 @@ type WebhookChannelConfig struct {
 }
 
 // SlackChannelConfig describes a Slack channel to which events are delivered
-// as messages.
+// as messages using the chat.postMessage API.
 type SlackChannelConfig struct {
 	// SecretRef references a Secret in the same namespace as the
-	// MessageChannel. The Secret's data map must contain one of the
-	// following keys:
-	//
-	//   - `webhook-url`: a Slack incoming webhook URL. Messages are posted
-	//     directly to it and the Channel field is ignored, as the channel is
-	//     bound to the webhook itself.
-	//   - `token`: a Slack bot token with the `chat:write` scope. Messages
-	//     are posted using the chat.postMessage API and the Channel field is
-	//     required.
+	// MessageChannel. The Secret's data map must contain a `token` key whose
+	// value is a Slack bot token with the `chat:write` scope. The bot must
+	// be a member of the targeted channel. One token can be shared by any
+	// number of MessageChannels.
 	//
 	// +kubebuilder:validation:Required
 	SecretRef corev1.LocalObjectReference `json:"secretRef"`
 	// Channel is the channel ID or name (e.g. `#deployments`) to post to.
-	// Required when the referenced Secret provides a `token`; ignored when
-	// it provides a `webhook-url`.
 	//
-	// +optional
-	Channel string `json:"channel,omitempty"`
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	Channel string `json:"channel"`
 }
 
 // +kubebuilder:object:root=true

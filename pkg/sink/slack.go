@@ -16,28 +16,15 @@ import (
 const slackPostMessageURL = "https://slack.com/api/chat.postMessage"
 
 type slackSink struct {
-	// webhookURL is set in incoming-webhook mode.
-	webhookURL string
-	// token, channel, and apiURL are set in bot-token (chat.postMessage)
-	// mode.
 	token      string
 	channel    string
 	apiURL     string
 	httpClient *http.Client
 }
 
-// newSlackWebhookSink returns a Sink that posts messages to a Slack incoming
-// webhook.
-func newSlackWebhookSink(webhookURL string, timeout time.Duration) Sink {
-	return &slackSink{
-		webhookURL: webhookURL,
-		httpClient: newHTTPClient(timeout),
-	}
-}
-
-// newSlackAPISink returns a Sink that posts messages to a Slack channel
-// using the chat.postMessage API.
-func newSlackAPISink(token, channel string, timeout time.Duration) Sink {
+// newSlackSink returns a Sink that posts messages to a Slack channel using
+// the chat.postMessage API.
+func newSlackSink(token, channel string, timeout time.Duration) Sink {
 	return &slackSink{
 		token:      token,
 		channel:    channel,
@@ -47,51 +34,24 @@ func newSlackAPISink(token, channel string, timeout time.Duration) Sink {
 }
 
 func (s *slackSink) Send(ctx context.Context, evt *payload.CloudEvent) error {
-	if s.webhookURL != "" {
-		return s.post(
-			ctx,
-			s.webhookURL,
-			"",
-			map[string]string{"text": messageText(evt)},
-		)
-	}
-	return s.post(
-		ctx,
-		s.apiURL,
-		s.token,
-		map[string]string{
-			"channel": s.channel,
-			"text":    messageText(evt),
-		},
-	)
-}
-
-// post sends the given message to the given Slack endpoint and interprets
-// the response, which differs subtly between incoming webhooks (plain "ok")
-// and Web API methods (JSON with an "ok" field).
-func (s *slackSink) post(
-	ctx context.Context,
-	url string,
-	token string,
-	message map[string]string,
-) error {
-	body, err := json.Marshal(message)
+	body, err := json.Marshal(map[string]string{
+		"channel": s.channel,
+		"text":    messageText(evt),
+	})
 	if err != nil {
 		return fmt.Errorf("error marshaling message: %w", err)
 	}
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
-		url,
+		s.apiURL,
 		bytes.NewReader(body),
 	)
 	if err != nil {
 		return fmt.Errorf("error building request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json; charset=utf-8")
-	if token != "" {
-		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
-	}
+	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", s.token))
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("error sending request to Slack: %w", err)
@@ -105,15 +65,14 @@ func (s *slackSink) post(
 			resp.StatusCode, strings.TrimSpace(string(respBody)),
 		)
 	}
-	// Web API methods return 200 even on failure, with ok=false and an
+	// chat.postMessage returns 200 even on failure, with ok=false and an
 	// error code in the body.
 	apiResp := struct {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 	}{}
 	if err = json.Unmarshal(respBody, &apiResp); err != nil {
-		// Incoming webhooks respond with plain "ok", which is not JSON.
-		return nil
+		return fmt.Errorf("error parsing Slack API response: %w", err)
 	}
 	if !apiResp.OK {
 		return fmt.Errorf("Slack API returned an error: %s", apiResp.Error)

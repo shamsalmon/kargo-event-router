@@ -51,23 +51,17 @@ spec:
                   messages. Exactly one of Webhook or Slack must be set.
                 properties:
                   channel:
-                    description: |-
-                      Channel is the channel ID or name (e.g. `#deployments`) to post to.
-                      Required when the referenced Secret provides a `token`; ignored when
-                      it provides a `webhook-url`.
+                    description: Channel is the channel ID or name (e.g. `#deployments`)
+                      to post to.
+                    minLength: 1
                     type: string
                   secretRef:
                     description: |-
                       SecretRef references a Secret in the same namespace as the
-                      MessageChannel. The Secret's data map must contain one of the
-                      following keys:
-
-                        - `webhook-url`: a Slack incoming webhook URL. Messages are posted
-                          directly to it and the Channel field is ignored, as the channel is
-                          bound to the webhook itself.
-                        - `token`: a Slack bot token with the `chat:write` scope. Messages
-                          are posted using the chat.postMessage API and the Channel field is
-                          required.
+                      MessageChannel. The Secret's data map must contain a `token` key whose
+                      value is a Slack bot token with the `chat:write` scope. The bot must
+                      be a member of the targeted channel. One token can be shared by any
+                      number of MessageChannels.
                     properties:
                       name:
                         default: ""
@@ -81,6 +75,7 @@ spec:
                     type: object
                     x-kubernetes-map-type: atomic
                 required:
+                - channel
                 - secretRef
                 type: object
               webhook:

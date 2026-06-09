@@ -1,6 +1,6 @@
-# Post Slack messages via a bot token whenever any Promotion in the
-# kargo-demo Project fails. Unlike an incoming webhook, one token can serve
-# any number of channels -- each MessageChannel picks its own.
+# Post Slack messages whenever any Promotion in the kargo-demo Project
+# fails. One token can serve any number of channels -- each MessageChannel
+# picks its own.
 #
 # Prerequisite: create a Slack app with the chat:write scope, install it to
 # your workspace, invite the bot to the target channels, and paste its bot

@@ -84,6 +84,7 @@ metadata:
   namespace: kargo-demo
 spec:
   slack:
+    channel: "#devops"
     secretRef:
       name: devops-team-slack-secret
 ---
@@ -93,34 +94,20 @@ metadata:
   name: devops-team-slack-secret
   namespace: kargo-demo
 stringData:
-  webhook-url: https://hooks.slack.com/services/T000/B000/XXXX
+  token: xoxb-0000000000-0000000000000-XXXXXXXXXXXXXXXXXXXXXXXX
 ```
 
 `types` and `when` are both optional; omitting them matches everything.
 
 ### Slack channels
 
-A Slack `MessageChannel` supports two authentication modes, selected by
-which key the referenced Secret provides:
-
-- **Incoming webhook** (`webhook-url` key, as above): messages post straight
-  to the webhook; the channel is bound to the webhook itself.
-- **Bot token** (`token` key): messages post via `chat.postMessage`, and
-  `spec.slack.channel` selects the channel — one token can serve many
-  channels:
-
-```yaml
-apiVersion: kargo-event-router.io/v1alpha1
-kind: MessageChannel
-metadata:
-  name: devops-team-slack
-  namespace: kargo-demo
-spec:
-  slack:
-    channel: "#deployments"
-    secretRef:
-      name: slack-bot-token   # data key: token (scope: chat:write)
-```
+Slack messages are posted with the
+[`chat.postMessage`](https://api.slack.com/methods/chat.postMessage) API.
+Create a Slack app with the `chat:write` scope, install it to your
+workspace, invite the bot to the target channels, and store its bot token
+(`xoxb-...`) under the `token` key of the referenced Secret. One token can
+serve any number of `MessageChannel`s; each picks its own
+`spec.slack.channel`.
 
 Messages are rendered as mrkdwn with the event type, project, stage,
 resource, and message, e.g.:

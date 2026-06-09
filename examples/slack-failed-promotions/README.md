@@ -8,11 +8,15 @@ taste, then apply with:
 kubectl apply -f <file>.yaml
 ```
 
+Prerequisite for both examples: create a Slack app with the `chat:write`
+scope, install it to your workspace, invite the bot to the target channels,
+and paste its bot token (`xoxb-...`) into the Secret. Messages are posted
+with the `chat.postMessage` API, so one token serves any number of channels.
+
 | File | What it does |
 |---|---|
-| [`incoming-webhook.yaml`](incoming-webhook.yaml) | Simplest setup: post to a single Slack channel via an [incoming webhook](https://api.slack.com/messaging/webhooks). |
-| [`bot-token.yaml`](bot-token.yaml) | Post via a Slack app bot token (`chat:write` scope). One token serves many channels; each `MessageChannel` picks its own channel. |
-| [`prod-only-with-expression.yaml`](prod-only-with-expression.yaml) | Only alert on failures in the `production` Stage, using a `when` expression, and include verification (AnalysisRun) failures. |
+| [`bot-token.yaml`](bot-token.yaml) | Post every failed promotion to `#deployments`. Defines two channels off one token. |
+| [`prod-only-with-expression.yaml`](prod-only-with-expression.yaml) | Additionally page `#oncall`, but only for failures in the `production` Stage, using a `when` expression, and include verification (AnalysisRun) failures. |
 
 All failed-promotion routing keys off two event types:
 
@@ -22,4 +26,4 @@ All failed-promotion routing keys off two event types:
 
 If you also want to know when post-promotion verification fails (a failed
 `AnalysisRun` spawned by the Stage), add `FreightVerificationFailed` and
-`FreightVerificationErrored`, as the third example does.
+`FreightVerificationErrored`, as the second example does.

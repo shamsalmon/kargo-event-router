@@ -18,8 +18,6 @@ import (
 const (
 	// SecretKeySigningKey holds the HMAC signing key for webhook channels.
 	SecretKeySigningKey = "secret"
-	// SecretKeySlackWebhookURL holds a Slack incoming webhook URL.
-	SecretKeySlackWebhookURL = "webhook-url"
 	// SecretKeySlackToken holds a Slack bot token.
 	SecretKeySlackToken = "token"
 )
@@ -55,21 +53,14 @@ func New(
 		return newWebhookSink(cfg.URL, signingKey, timeout), nil
 	case channel.Spec.Slack != nil:
 		cfg := channel.Spec.Slack
-		if webhookURL, ok := secretData[SecretKeySlackWebhookURL]; ok {
-			return newSlackWebhookSink(string(webhookURL), timeout), nil
+		token, ok := secretData[SecretKeySlackToken]
+		if !ok {
+			return nil, fmt.Errorf(
+				"Secret %q has no %q key",
+				cfg.SecretRef.Name, SecretKeySlackToken,
+			)
 		}
-		if token, ok := secretData[SecretKeySlackToken]; ok {
-			if cfg.Channel == "" {
-				return nil, errors.New(
-					"channel is required when the Secret provides a bot token",
-				)
-			}
-			return newSlackAPISink(string(token), cfg.Channel, timeout), nil
-		}
-		return nil, fmt.Errorf(
-			"Secret %q has neither a %q nor a %q key",
-			cfg.SecretRef.Name, SecretKeySlackWebhookURL, SecretKeySlackToken,
-		)
+		return newSlackSink(string(token), cfg.Channel, timeout), nil
 	}
 	return nil, errors.New("MessageChannel has no destination configured")
 }

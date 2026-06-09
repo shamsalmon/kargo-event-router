@@ -28,55 +28,7 @@ func newTestCloudEvent() *payload.CloudEvent {
 	}
 }
 
-func TestSlackWebhookSinkSend(t *testing.T) {
-	t.Parallel()
-
-	testCases := []struct {
-		name    string
-		handler http.HandlerFunc
-		assert  func(*testing.T, error)
-	}{
-		{
-			name: "success",
-			handler: func(w http.ResponseWriter, r *http.Request) {
-				body, err := io.ReadAll(r.Body)
-				require.NoError(t, err)
-				message := map[string]string{}
-				require.NoError(t, json.Unmarshal(body, &message))
-				require.Contains(t, message["text"], ":x: *Promotion Failed*")
-				require.Contains(t, message["text"], "`kargo-demo`")
-				require.Contains(t, message["text"], "`prod`")
-				require.Contains(t, message["text"], "> something broke")
-				// Incoming webhooks respond with a plain-text body.
-				_, _ = w.Write([]byte("ok"))
-			},
-			assert: func(t *testing.T, err error) {
-				require.NoError(t, err)
-			},
-		},
-		{
-			name: "non-2xx response",
-			handler: func(w http.ResponseWriter, _ *http.Request) {
-				http.Error(w, "no_service", http.StatusNotFound)
-			},
-			assert: func(t *testing.T, err error) {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), "404")
-			},
-		},
-	}
-	for _, testCase := range testCases {
-		t.Run(testCase.name, func(t *testing.T) {
-			t.Parallel()
-			srv := httptest.NewServer(testCase.handler)
-			t.Cleanup(srv.Close)
-			s := newSlackWebhookSink(srv.URL, 5*time.Second)
-			testCase.assert(t, s.Send(context.Background(), newTestCloudEvent()))
-		})
-	}
-}
-
-func TestSlackAPISinkSend(t *testing.T) {
+func TestSlackSinkSend(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
@@ -93,7 +45,10 @@ func TestSlackAPISinkSend(t *testing.T) {
 				message := map[string]string{}
 				require.NoError(t, json.Unmarshal(body, &message))
 				require.Equal(t, "#deployments", message["channel"])
-				require.NotEmpty(t, message["text"])
+				require.Contains(t, message["text"], ":x: *Promotion Failed*")
+				require.Contains(t, message["text"], "`kargo-demo`")
+				require.Contains(t, message["text"], "`prod`")
+				require.Contains(t, message["text"], "> something broke")
 				w.Header().Set("Content-Type", "application/json")
 				_, _ = w.Write([]byte(`{"ok":true}`))
 			},
@@ -110,6 +65,26 @@ func TestSlackAPISinkSend(t *testing.T) {
 			assert: func(t *testing.T, err error) {
 				require.Error(t, err)
 				require.Contains(t, err.Error(), "channel_not_found")
+			},
+		},
+		{
+			name: "non-2xx response",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "upstream unhappy", http.StatusBadGateway)
+			},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "502")
+			},
+		},
+		{
+			name: "unparseable response body",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte("not json"))
+			},
+			assert: func(t *testing.T, err error) {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), "error parsing Slack API response")
 			},
 		},
 	}

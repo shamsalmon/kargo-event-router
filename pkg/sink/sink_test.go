@@ -46,39 +46,7 @@ func TestNew(t *testing.T) {
 			},
 		},
 		{
-			name: "slack incoming webhook",
-			spec: v1alpha1.MessageChannelSpec{
-				Slack: &v1alpha1.SlackChannelConfig{
-					SecretRef: corev1.LocalObjectReference{Name: "test-secret"},
-				},
-			},
-			secretData: map[string][]byte{
-				SecretKeySlackWebhookURL: []byte("https://hooks.slack.com/services/x"),
-			},
-			assert: func(t *testing.T, s Sink, err error) {
-				require.NoError(t, err)
-				slack, ok := s.(*slackSink)
-				require.True(t, ok)
-				require.NotEmpty(t, slack.webhookURL)
-			},
-		},
-		{
-			name: "slack bot token requires a channel",
-			spec: v1alpha1.MessageChannelSpec{
-				Slack: &v1alpha1.SlackChannelConfig{
-					SecretRef: corev1.LocalObjectReference{Name: "test-secret"},
-				},
-			},
-			secretData: map[string][]byte{
-				SecretKeySlackToken: []byte("xoxb-test"),
-			},
-			assert: func(t *testing.T, _ Sink, err error) {
-				require.Error(t, err)
-				require.Contains(t, err.Error(), "channel is required")
-			},
-		},
-		{
-			name: "slack bot token with a channel",
+			name: "slack",
 			spec: v1alpha1.MessageChannelSpec{
 				Slack: &v1alpha1.SlackChannelConfig{
 					SecretRef: corev1.LocalObjectReference{Name: "test-secret"},
@@ -96,16 +64,17 @@ func TestNew(t *testing.T) {
 			},
 		},
 		{
-			name: "slack Secret with neither key",
+			name: "slack Secret with no token key",
 			spec: v1alpha1.MessageChannelSpec{
 				Slack: &v1alpha1.SlackChannelConfig{
 					SecretRef: corev1.LocalObjectReference{Name: "test-secret"},
+					Channel:   "#deployments",
 				},
 			},
 			secretData: map[string][]byte{"wrong-key": []byte("x")},
 			assert: func(t *testing.T, _ Sink, err error) {
 				require.Error(t, err)
-				require.Contains(t, err.Error(), "neither")
+				require.Contains(t, err.Error(), `no "token" key`)
 			},
 		},
 		{

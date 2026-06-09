@@ -373,6 +373,7 @@ func TestReconcile(t *testing.T) {
 							SecretRef: corev1.LocalObjectReference{
 								Name: "test-secret",
 							},
+							Channel: "#deployments",
 						},
 					},
 				},
@@ -382,7 +383,7 @@ func TestReconcile(t *testing.T) {
 						Namespace: testProject,
 					},
 					Data: map[string][]byte{
-						sink.SecretKeySlackWebhookURL: []byte("https://hooks.slack.com/services/x"),
+						sink.SecretKeySlackToken: []byte("xoxb-test"),
 					},
 				},
 			},
@@ -393,8 +394,8 @@ func TestReconcile(t *testing.T) {
 				require.Len(t, f.sends, 1)
 				require.Equal(
 					t,
-					[]byte("https://hooks.slack.com/services/x"),
-					f.sends[0].secretData[sink.SecretKeySlackWebhookURL],
+					[]byte("xoxb-test"),
+					f.sends[0].secretData[sink.SecretKeySlackToken],
 				)
 			},
 		},
