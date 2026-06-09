@@ -1,11 +1,10 @@
 // Package dispatch watches Kubernetes Events recorded by Kargo and delivers
-// them to the destinations described by EventRoute resources in the same
+// them to the channels referenced by EventRouter resources in the same
 // namespace (i.e. the same Kargo Project).
 package dispatch
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -29,14 +28,10 @@ import (
 	"github.com/shamsalmon/kargo-event-router/pkg/sink"
 )
 
-// annotationKeyRoutedTo is set on Kubernetes Events to record the names of
-// the EventRoutes to which the event has already been delivered. This is what
-// makes delivery idempotent across retries and controller restarts.
+// annotationKeyRoutedTo is set on Kubernetes Events to record the
+// router/channel pairs to which the event has already been delivered. This
+// is what makes delivery idempotent across retries and controller restarts.
 const annotationKeyRoutedTo = "kargo-event-router.io/routed-to"
-
-// signingKeySecretKey is the key in a referenced Secret's data map holding
-// the HMAC signing key.
-const signingKeySecretKey = "secret"
 
 // ReconcilerConfig represents configuration for the event dispatch
 // reconciler.
@@ -45,7 +40,7 @@ type ReconcilerConfig struct {
 	// for delivery. This prevents replaying old events when the controller
 	// starts (or restarts) and resyncs.
 	MaxEventAge time.Duration `envconfig:"MAX_EVENT_AGE" default:"30m"`
-	// SendTimeout is the per-request timeout for deliveries to sinks.
+	// SendTimeout is the per-request timeout for deliveries to channels.
 	SendTimeout time.Duration `envconfig:"SEND_TIMEOUT" default:"10s"`
 }
 
@@ -63,7 +58,11 @@ type reconciler struct {
 	cfg       ReconcilerConfig
 	// newSinkFn constructs the Sink for a delivery. It is a field so tests
 	// can substitute a fake.
-	newSinkFn func(url string, signingKey []byte, timeout time.Duration) sink.Sink
+	newSinkFn func(
+		channel *v1alpha1.MessageChannel,
+		secretData map[string][]byte,
+		timeout time.Duration,
+	) (sink.Sink, error)
 	// nowFn returns the current time. It is a field so tests can control it.
 	nowFn func() time.Time
 }
@@ -77,7 +76,7 @@ func newReconciler(
 		client:    kubeClient,
 		apiReader: apiReader,
 		cfg:       cfg,
-		newSinkFn: sink.NewWebhookSink,
+		newSinkFn: sink.New,
 		nowFn:     time.Now,
 	}
 }
@@ -87,7 +86,7 @@ func newReconciler(
 //
 // +kubebuilder:rbac:groups="",resources=events,verbs=get;list;watch;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get
-// +kubebuilder:rbac:groups=kargo-event-router.io,resources=eventroutes,verbs=get;list;watch
+// +kubebuilder:rbac:groups=kargo-event-router.io,resources=eventrouters;messagechannels,verbs=get;list;watch
 func SetupReconcilerWithManager(
 	mgr manager.Manager,
 	cfg ReconcilerConfig,
@@ -127,24 +126,36 @@ func (r *reconciler) Reconcile(
 		return ctrl.Result{}, nil
 	}
 
-	routes := &v1alpha1.EventRouteList{}
+	routers := &v1alpha1.EventRouterList{}
 	if err := r.client.List(
 		ctx,
-		routes,
+		routers,
 		client.InNamespace(evt.Namespace),
 	); err != nil {
-		return ctrl.Result{}, fmt.Errorf("error listing EventRoutes: %w", err)
+		return ctrl.Result{}, fmt.Errorf("error listing EventRouters: %w", err)
 	}
 
+	// Collect the router/channel pairs the event must still be delivered to.
 	delivered := routedTo(evt)
-	var pending []*v1alpha1.EventRoute
-	for i := range routes.Items {
-		route := &routes.Items[i]
-		if slices.Contains(delivered, route.Name) {
+	var pending []delivery
+	for i := range routers.Items {
+		router := &routers.Items[i]
+		matched, err := routerMatches(router, evt)
+		if err != nil {
+			// A broken when expression cannot be fixed by retrying. Log it
+			// and move on; it will be re-evaluated when its next event
+			// occurs.
+			logger.Error(err, "error matching EventRouter", "router", router.Name)
 			continue
 		}
-		if routeMatches(route, evt) {
-			pending = append(pending, route)
+		if !matched {
+			continue
+		}
+		for _, channel := range router.Spec.Channels {
+			d := delivery{router: router.Name, channel: channel.Name}
+			if !slices.Contains(delivered, d.key()) {
+				pending = append(pending, d)
+			}
 		}
 	}
 	if len(pending) == 0 {
@@ -158,37 +169,45 @@ func (r *reconciler) Reconcile(
 		logger.Error(err, "error building payload; dropping event")
 		return ctrl.Result{}, nil
 	}
-	body, err := json.Marshal(ce)
-	if err != nil {
-		logger.Error(err, "error marshaling payload; dropping event")
-		return ctrl.Result{}, nil
-	}
 
-	// Deliver to each pending route, marking the event after each successful
-	// delivery so a retry triggered by one route's failure does not
-	// re-deliver to routes that already succeeded.
+	// Deliver to each pending channel, marking the event after each
+	// successful delivery so a retry triggered by one channel's failure
+	// does not re-deliver to channels that already succeeded.
 	var errs []error
-	for _, route := range pending {
-		if err = r.deliver(ctx, route, body); err != nil {
+	for _, d := range pending {
+		if err = r.deliver(ctx, evt.Namespace, d.channel, ce); err != nil {
 			errs = append(
 				errs,
-				fmt.Errorf("error delivering to EventRoute %q: %w", route.Name, err),
+				fmt.Errorf("error delivering to channel %q: %w", d.channel, err),
 			)
 			continue
 		}
 		logger.Info(
 			"delivered event",
 			"reason", evt.Reason,
-			"route", route.Name,
+			"router", d.router,
+			"channel", d.channel,
 		)
-		if err = r.markRouted(ctx, evt, route.Name); err != nil {
+		if err = r.markRouted(ctx, evt, d.key()); err != nil {
 			errs = append(errs, fmt.Errorf(
-				"error marking event as routed to EventRoute %q: %w",
-				route.Name, err,
+				"error marking event as routed to %q: %w", d.key(), err,
 			))
 		}
 	}
 	return ctrl.Result{}, errors.Join(errs...)
+}
+
+// delivery identifies one router/channel pair an event is delivered to.
+type delivery struct {
+	router  string
+	channel string
+}
+
+// key returns the representation of the delivery recorded in the routed-to
+// annotation. Kubernetes resource names cannot contain "/", so the pair is
+// unambiguous.
+func (d delivery) key() string {
+	return d.router + "/" + d.channel
 }
 
 // isRoutable returns true if the given object is a Kubernetes Event recorded
@@ -204,85 +223,105 @@ func (r *reconciler) isRoutable(obj client.Object) bool {
 	return r.nowFn().Sub(eventTime(evt)) <= r.cfg.MaxEventAge
 }
 
-// deliver sends the given payload to the given EventRoute's destination.
+// deliver sends the given event to the named MessageChannel.
 func (r *reconciler) deliver(
 	ctx context.Context,
-	route *v1alpha1.EventRoute,
-	body []byte,
+	namespace string,
+	channelName string,
+	ce *payload.CloudEvent,
 ) error {
-	var signingKey []byte
-	if ref := route.Spec.Webhook.SecretRef; ref != nil {
+	channel := &v1alpha1.MessageChannel{}
+	if err := r.client.Get(
+		ctx,
+		client.ObjectKey{Namespace: namespace, Name: channelName},
+		channel,
+	); err != nil {
+		return fmt.Errorf("error getting MessageChannel: %w", err)
+	}
+	var secretData map[string][]byte
+	if ref := channelSecretRef(channel); ref != nil {
 		// Secrets in project namespaces are deliberately read with the
 		// uncached reader so the controller does not have to watch and cache
 		// Secrets cluster-wide.
 		secret := &corev1.Secret{}
 		if err := r.apiReader.Get(
 			ctx,
-			client.ObjectKey{Namespace: route.Namespace, Name: ref.Name},
+			client.ObjectKey{Namespace: namespace, Name: ref.Name},
 			secret,
 		); err != nil {
 			return fmt.Errorf("error getting Secret %q: %w", ref.Name, err)
 		}
-		key, ok := secret.Data[signingKeySecretKey]
-		if !ok {
-			return fmt.Errorf(
-				"Secret %q has no %q key", ref.Name, signingKeySecretKey,
-			)
-		}
-		signingKey = key
+		secretData = secret.Data
 	}
-	return r.newSinkFn(route.Spec.Webhook.URL, signingKey, r.cfg.SendTimeout).
-		Send(ctx, body)
+	s, err := r.newSinkFn(channel, secretData, r.cfg.SendTimeout)
+	if err != nil {
+		return err
+	}
+	return s.Send(ctx, ce)
 }
 
-// markRouted records on the event that it has been delivered to the named
-// EventRoute.
+// channelSecretRef returns the reference to the Secret the given
+// MessageChannel depends on, if any.
+func channelSecretRef(
+	channel *v1alpha1.MessageChannel,
+) *corev1.LocalObjectReference {
+	switch {
+	case channel.Spec.Webhook != nil:
+		return channel.Spec.Webhook.SecretRef
+	case channel.Spec.Slack != nil:
+		return &channel.Spec.Slack.SecretRef
+	}
+	return nil
+}
+
+// markRouted records on the event that it has been delivered to the given
+// router/channel pair.
 func (r *reconciler) markRouted(
 	ctx context.Context,
 	evt *corev1.Event,
-	routeName string,
+	deliveryKey string,
 ) error {
 	patch := client.MergeFrom(evt.DeepCopy())
 	if evt.Annotations == nil {
 		evt.Annotations = map[string]string{}
 	}
 	evt.Annotations[annotationKeyRoutedTo] = strings.Join(
-		append(routedTo(evt), routeName),
+		append(routedTo(evt), deliveryKey),
 		",",
 	)
 	return r.client.Patch(ctx, evt, patch)
 }
 
-// routedTo returns the names of the EventRoutes to which the given event has
+// routedTo returns the router/channel pairs to which the given event has
 // already been delivered.
 func routedTo(evt *corev1.Event) []string {
-	var names []string
-	for _, name := range strings.Split(
+	var keys []string
+	for _, key := range strings.Split(
 		evt.Annotations[annotationKeyRoutedTo], ",",
 	) {
-		if name = strings.TrimSpace(name); name != "" {
-			names = append(names, name)
+		if key = strings.TrimSpace(key); key != "" {
+			keys = append(keys, key)
 		}
 	}
-	return names
+	return keys
 }
 
-// routeMatches returns true if the given EventRoute applies to the given
+// routerMatches returns true if the given EventRouter applies to the given
 // event.
-func routeMatches(route *v1alpha1.EventRoute, evt *corev1.Event) bool {
-	if len(route.Spec.EventTypes) > 0 && !slices.Contains(
-		route.Spec.EventTypes,
+func routerMatches(
+	router *v1alpha1.EventRouter,
+	evt *corev1.Event,
+) (bool, error) {
+	if len(router.Spec.Types) > 0 && !slices.Contains(
+		router.Spec.Types,
 		kargoapi.EventType(evt.Reason),
 	) {
-		return false
+		return false, nil
 	}
-	if len(route.Spec.Stages) > 0 {
-		stage := evt.Annotations[kargoapi.AnnotationKeyEventStageName]
-		if stage == "" || !slices.Contains(route.Spec.Stages, stage) {
-			return false
-		}
+	if router.Spec.When == "" {
+		return true, nil
 	}
-	return true
+	return evalWhen(router.Spec.When, evt)
 }
 
 // eventTime returns the most meaningful timestamp available on the given

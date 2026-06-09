@@ -28,7 +28,10 @@ type CloudEvent struct {
 	Subject         string    `json:"subject,omitempty"`
 	Time            time.Time `json:"time"`
 	DataContentType string    `json:"datacontenttype"`
-	Data            any       `json:"data"`
+	// Stage is a CloudEvents extension attribute carrying the name of the
+	// Stage the event relates to, when there is one.
+	Stage string `json:"stage,omitempty"`
+	Data  any    `json:"data"`
 }
 
 // New converts the given Kubernetes Event, which must have been recorded by
@@ -51,6 +54,7 @@ func New(evt *corev1.Event) (*CloudEvent, error) {
 		),
 		Time:            eventTime(evt),
 		DataContentType: "application/json",
+		Stage:           evt.Annotations[kargoapi.AnnotationKeyEventStageName],
 		Data:            data,
 	}, nil
 }

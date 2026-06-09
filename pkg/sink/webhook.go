@@ -6,12 +6,13 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 
-	kargonet "github.com/akuity/kargo/pkg/net"
+	"github.com/shamsalmon/kargo-event-router/pkg/payload"
 )
 
 const (
@@ -31,34 +32,28 @@ type webhookSink struct {
 	httpClient *http.Client
 }
 
-// NewWebhookSink returns a Sink that POSTs payloads to the given URL. When
-// signingKey is non-empty, each request body is signed with HMAC-SHA256 and
-// the signature is sent in the X-Kargo-Event-Router-Signature header.
-func NewWebhookSink(url string, signingKey []byte, timeout time.Duration) Sink {
-	transport, ok := http.DefaultTransport.(*http.Transport)
-	if !ok {
-		transport = &http.Transport{}
-	} else {
-		transport = transport.Clone()
-	}
+// newWebhookSink returns a Sink that POSTs events as CloudEvents to the
+// given URL. When signingKey is non-empty, each request body is signed with
+// HMAC-SHA256 and the signature is sent in the
+// X-Kargo-Event-Router-Signature header.
+func newWebhookSink(url string, signingKey []byte, timeout time.Duration) Sink {
 	return &webhookSink{
 		url:        url,
 		signingKey: signingKey,
-		httpClient: &http.Client{
-			Timeout: timeout,
-			// Refuse connections to link-local addresses to mitigate SSRF
-			// against cloud instance metadata endpoints.
-			Transport: kargonet.SafeTransport(transport),
-		},
+		httpClient: newHTTPClient(timeout),
 	}
 }
 
-func (w *webhookSink) Send(ctx context.Context, payload []byte) error {
+func (w *webhookSink) Send(ctx context.Context, evt *payload.CloudEvent) error {
+	body, err := json.Marshal(evt)
+	if err != nil {
+		return fmt.Errorf("error marshaling event: %w", err)
+	}
 	req, err := http.NewRequestWithContext(
 		ctx,
 		http.MethodPost,
 		w.url,
-		bytes.NewReader(payload),
+		bytes.NewReader(body),
 	)
 	if err != nil {
 		return fmt.Errorf("error building request for %q: %w", w.url, err)
@@ -66,7 +61,7 @@ func (w *webhookSink) Send(ctx context.Context, payload []byte) error {
 	req.Header.Set("Content-Type", contentTypeCloudEvents)
 	if len(w.signingKey) > 0 {
 		mac := hmac.New(sha256.New, w.signingKey)
-		_, _ = mac.Write(payload) // never returns an error
+		_, _ = mac.Write(body) // never returns an error
 		req.Header.Set(
 			SignatureHeader,
 			fmt.Sprintf("sha256=%s", hex.EncodeToString(mac.Sum(nil))),

@@ -21,7 +21,8 @@ rules:
 - apiGroups:
   - kargo-event-router.io
   resources:
-  - eventroutes
+  - eventrouters
+  - messagechannels
   verbs:
   - get
   - list

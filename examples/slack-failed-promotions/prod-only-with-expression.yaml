@@ -1,0 +1,21 @@
+# Page the on-call channel only when something fails in the production
+# Stage -- a failed or errored Promotion, or failed post-promotion
+# verification (a failed AnalysisRun spawned by the Stage).
+#
+# Assumes the oncall-slack MessageChannel from bot-token.yaml (or swap in an
+# incoming-webhook channel from incoming-webhook.yaml).
+apiVersion: kargo-event-router.io/v1alpha1
+kind: EventRouter
+metadata:
+  name: prod-failures
+  namespace: kargo-demo
+spec:
+  types:
+  - PromotionFailed
+  - PromotionErrored
+  - FreightVerificationFailed
+  - FreightVerificationErrored
+  channels:
+  - name: oncall-slack
+    kind: MessageChannel
+  when: "event.stageName == 'production'"

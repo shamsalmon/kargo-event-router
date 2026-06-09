@@ -4,20 +4,17 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.19.0
-  name: eventroutes.kargo-event-router.io
+  name: eventrouters.kargo-event-router.io
 spec:
   group: kargo-event-router.io
   names:
-    kind: EventRoute
-    listKind: EventRouteList
-    plural: eventroutes
-    singular: eventroute
+    kind: EventRouter
+    listKind: EventRouterList
+    plural: eventrouters
+    singular: eventrouter
   scope: Namespaced
   versions:
   - additionalPrinterColumns:
-    - jsonPath: .spec.webhook.url
-      name: URL
-      type: string
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -25,9 +22,9 @@ spec:
     schema:
       openAPIV3Schema:
         description: |-
-          EventRoute describes a destination to which Kargo events occurring within
-          the EventRoute's namespace (i.e. within a single Kargo Project) are
-          delivered.
+          EventRouter describes which Kargo events occurring within its namespace
+          (i.e. within a single Kargo Project) should be delivered, and to which
+          channels.
         properties:
           apiVersion:
             description: |-
@@ -47,65 +44,62 @@ spec:
           metadata:
             type: object
           spec:
-            description: Spec describes which events to route and where to deliver
-              them.
+            description: |-
+              Spec describes which events to route and the channels to deliver them
+              to.
             properties:
-              eventTypes:
+              channels:
                 description: |-
-                  EventTypes is a list of Kargo event types this route applies to, e.g.
-                  PromotionFailed or FreightVerificationFailed. When empty, the route
+                  Channels references the channels to which matching events are
+                  delivered.
+                items:
+                  description: |-
+                    ChannelReference is a reference to a channel resource in the same
+                    namespace as the EventRouter.
+                  properties:
+                    kind:
+                      description: |-
+                        Kind is the kind of the referenced channel resource. MessageChannel is
+                        the only currently supported kind and may be omitted.
+                      enum:
+                      - MessageChannel
+                      type: string
+                    name:
+                      description: Name is the name of the referenced channel resource.
+                      minLength: 1
+                      type: string
+                  required:
+                  - name
+                  type: object
+                minItems: 1
+                type: array
+              types:
+                description: |-
+                  Types is a list of Kargo event types this router applies to, e.g.
+                  PromotionFailed or FreightVerificationFailed. When empty, the router
                   applies to all event types.
                 items:
                   type: string
                 type: array
-              stages:
+              when:
                 description: |-
-                  Stages is a list of Stage names this route applies to. When non-empty,
-                  only events related to one of the named Stages are delivered. When
-                  empty, the route applies to events related to any Stage.
-                items:
-                  type: string
-                type: array
-              webhook:
-                description: |-
-                  Webhook describes the destination to which matching events are
-                  delivered.
-                properties:
-                  secretRef:
-                    description: |-
-                      SecretRef references a Secret in the same namespace as the EventRoute.
-                      When specified, the Secret's data map must contain a `secret` key whose
-                      value is used to compute an HMAC-SHA256 signature of each request body.
-                      The signature is sent in the X-Kargo-Event-Router-Signature header so
-                      receivers can verify the authenticity of the payload.
-                    properties:
-                      name:
-                        default: ""
-                        description: |-
-                          Name of the referent.
-                          This field is effectively required, but due to backwards compatibility is
-                          allowed to be empty. Instances of this type with an empty value here are
-                          almost certainly wrong.
-                          More info: https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#names
-                        type: string
-                    type: object
-                    x-kubernetes-map-type: atomic
-                  url:
-                    description: URL is the address to which matching events are POSTed.
-                    pattern: ^https?://
-                    type: string
-                required:
-                - url
-                type: object
+                  When is an optional expr-lang expression that must evaluate to true
+                  for an event to be delivered. The expression is evaluated against an
+                  `event` object exposing the event's type, project, message, and all of
+                  its Kargo annotations as camelCase fields, e.g.:
+
+                    event.stageName == 'production'
+                    event.type == 'PromotionFailed' && event.freightAlias != ''
+                type: string
             required:
-            - webhook
+            - channels
             type: object
           status:
-            description: Status describes the current status of the EventRoute.
+            description: Status describes the current status of the EventRouter.
             properties:
               conditions:
                 description: |-
-                  Conditions contains the last observations of the EventRoute's current
+                  Conditions contains the last observations of the EventRouter's current
                   state.
                 items:
                   description: Condition contains details for one aspect of the current

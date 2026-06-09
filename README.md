@@ -2,26 +2,27 @@
 
 A standalone Kubernetes controller that routes [Kargo](https://kargo.io)
 events — promotion failures, verification (AnalysisRun) failures, freight
-approvals, and more — to external webhook endpoints as
-[CloudEvents](https://cloudevents.io).
+approvals, and more — to Slack channels and webhook endpoints.
 
 Kargo records everything that happens during promotion and verification as
 Kubernetes Events with rich, structured annotations. This controller watches
-those Events and delivers them to destinations you describe with `EventRoute`
-resources, one or more per Project namespace. No changes to Kargo itself are
-required.
+those Events and delivers them according to `EventRouter` resources, which
+select events by type and an optional `when` expression and reference one or
+more `MessageChannel` destinations. No changes to Kargo itself are required.
 
 ## How it works
 
 ```
 Kargo controllers / API server          kargo-event-router
-┌───────────────────────────┐           ┌─────────────────────────────────┐
-│ record Kargo events as    │  (etcd)   │ watch corev1.Event              │
-│ corev1.Event (unchanged)  │ ────────▶ │  ├ match EventRoutes in the     │
-└───────────────────────────┘           │  │  event's namespace           │
-                                        │  ├ POST CloudEvents to webhooks │
-                                        │  └ mark the event as routed     │
-                                        └─────────────────────────────────┘
+┌───────────────────────────┐           ┌──────────────────────────────────┐
+│ record Kargo events as    │  (etcd)   │ watch corev1.Event               │
+│ corev1.Event (unchanged)  │ ────────▶ │  ├ match EventRouters in the     │
+└───────────────────────────┘           │  │  event's namespace            │
+                                        │  ├ deliver to each referenced    │
+                                        │  │  MessageChannel (Slack or     │
+                                        │  │  CloudEvents webhook)         │
+                                        │  └ mark the event as routed      │
+                                        └──────────────────────────────────┘
 ```
 
 - The watch is restricted server-side (field selector on
@@ -30,10 +31,10 @@ Kargo controllers / API server          kargo-event-router
   `github.com/akuity/kargo/pkg/event` library, so the JSON you receive mirrors
   Kargo's event model exactly.
 - Delivery is **at-least-once**. Each successful delivery is recorded on the
-  Event in a `kargo-event-router.io/routed-to` annotation, so retries (and
-  controller restarts) never re-deliver to a route that already succeeded.
-  Consumers can deduplicate using the CloudEvent `id`, which is the Event's
-  UID.
+  Event in a `kargo-event-router.io/routed-to` annotation (as
+  `<router>/<channel>` pairs), so retries (and controller restarts) never
+  re-deliver to a channel that already succeeded. Webhook consumers can
+  deduplicate using the CloudEvent `id`, which is the Event's UID.
 - Failed deliveries are retried with exponential backoff by the controller's
   workqueue.
 
@@ -48,40 +49,116 @@ The deployment runs a single replica. If you scale it up, set
 
 ## Usage
 
-Create an `EventRoute` in a Project namespace. For example, to be notified
-when verification (an Argo Rollouts `AnalysisRun` spawned by a Stage) fails,
-or when a Promotion fails outright, for production Stages:
+Routing is described by two resources, both namespaced to a Project:
+
+- **`MessageChannel`** — a destination (a Slack channel or a webhook
+  endpoint), defined once and shared by any number of routers.
+- **`EventRouter`** — a routing rule: which event `types`, an optional
+  `when` expression, and the `channels` to deliver to.
+
+For example, to post to Slack when verification (an Argo Rollouts
+`AnalysisRun` spawned by a Stage) fails, or a Promotion fails outright, in
+the production Stage:
 
 ```yaml
 apiVersion: kargo-event-router.io/v1alpha1
-kind: EventRoute
+kind: EventRouter
 metadata:
-  name: alert-on-prod-failures
+  name: prod-failures
   namespace: kargo-demo
 spec:
-  eventTypes:
+  types:
   - FreightVerificationFailed
   - FreightVerificationErrored
   - PromotionFailed
   - PromotionErrored
-  stages:
-  - prod
-  webhook:
-    url: https://hooks.example.com/kargo
+  channels:
+  - name: devops-team-slack
+    kind: MessageChannel
+  when: "event.stageName == 'production'"
+---
+apiVersion: kargo-event-router.io/v1alpha1
+kind: MessageChannel
+metadata:
+  name: devops-team-slack
+  namespace: kargo-demo
+spec:
+  slack:
     secretRef:
-      name: alert-sink-secret
+      name: devops-team-slack-secret
 ---
 apiVersion: v1
 kind: Secret
 metadata:
-  name: alert-sink-secret
+  name: devops-team-slack-secret
   namespace: kargo-demo
 stringData:
-  secret: my-signing-key
+  webhook-url: https://hooks.slack.com/services/T000/B000/XXXX
 ```
 
-Both `eventTypes` and `stages` are optional; an empty list matches
-everything.
+`types` and `when` are both optional; omitting them matches everything.
+
+### Slack channels
+
+A Slack `MessageChannel` supports two authentication modes, selected by
+which key the referenced Secret provides:
+
+- **Incoming webhook** (`webhook-url` key, as above): messages post straight
+  to the webhook; the channel is bound to the webhook itself.
+- **Bot token** (`token` key): messages post via `chat.postMessage`, and
+  `spec.slack.channel` selects the channel — one token can serve many
+  channels:
+
+```yaml
+apiVersion: kargo-event-router.io/v1alpha1
+kind: MessageChannel
+metadata:
+  name: devops-team-slack
+  namespace: kargo-demo
+spec:
+  slack:
+    channel: "#deployments"
+    secretRef:
+      name: slack-bot-token   # data key: token (scope: chat:write)
+```
+
+Messages are rendered as mrkdwn with the event type, project, stage,
+resource, and message, e.g.:
+
+> :x: **Promotion Failed**
+> **Project:** `kargo-demo`
+> **Stage:** `production`
+> **Resource:** `Promotion/prod.01jx2y8sw5fjvnnerqyqjwbb22`
+> > Step 3 failed: ...
+
+### Webhook channels
+
+```yaml
+apiVersion: kargo-event-router.io/v1alpha1
+kind: MessageChannel
+metadata:
+  name: audit-webhook
+  namespace: kargo-demo
+spec:
+  webhook:
+    url: https://hooks.example.com/kargo
+    secretRef:
+      name: audit-webhook-secret   # optional; data key: secret (HMAC signing key)
+```
+
+### `when` expressions
+
+`when` is an [expr-lang](https://expr-lang.org) expression (the same engine
+Kargo uses) evaluated against an `event` object that exposes `type`,
+`project`, `message`, and every Kargo event annotation as a camelCase field
+(`stageName`, `promotionName`, `freightName`, `freightAlias`,
+`analysisRunName`, `actor`, ...):
+
+```
+event.stageName == 'production'
+event.type == 'PromotionFailed' && hasPrefix(event.promotionName, 'prod.')
+event.message contains 'error-rate'
+```
 
 ### Event types
 
@@ -91,10 +168,10 @@ everything.
 `FreightVerificationErrored`, `FreightVerificationAborted`,
 `FreightVerificationInconclusive`, `FreightVerificationUnknown`
 
-### Payload
+### Webhook payload
 
-Events are POSTed as CloudEvents 1.0 in structured JSON mode with
-`Content-Type: application/cloudevents+json`:
+Webhook channels receive events as CloudEvents 1.0 in structured JSON mode
+with `Content-Type: application/cloudevents+json`:
 
 ```json
 {
@@ -163,9 +240,13 @@ to the commit of the Kargo release it builds against (see the `replace`
 directives in `go.mod`). When bumping the Kargo dependency, update those pins
 to the new release's commit.
 
+## Examples
+
+See [`examples/`](examples/) for ready-to-apply manifests, including Slack
+notifications for failed promotions.
+
 ## Roadmap
 
-- `Ready` condition on EventRoute status (URL/Secret validation before the
-  first event fires)
-- Additional sink types (Slack, SNS/SQS, NATS)
-- Glob/regex Stage selectors
+- `Ready` condition on EventRouter/MessageChannel status (URL/Secret
+  validation before the first event fires)
+- Additional channel types (SNS/SQS, NATS, Microsoft Teams)

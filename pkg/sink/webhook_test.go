@@ -5,6 +5,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +19,6 @@ import (
 func TestWebhookSinkSend(t *testing.T) {
 	t.Parallel()
 
-	testPayload := []byte(`{"specversion":"1.0"}`)
 	testSigningKey := []byte("test-signing-key")
 
 	testCases := []struct {
@@ -32,7 +32,10 @@ func TestWebhookSinkSend(t *testing.T) {
 			handler: func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
 				require.NoError(t, err)
-				require.Equal(t, testPayload, body)
+				ce := map[string]any{}
+				require.NoError(t, json.Unmarshal(body, &ce))
+				require.Equal(t, "io.akuity.kargo.promotion-failed", ce["type"])
+				require.Equal(t, "prod", ce["stage"])
 				require.Equal(
 					t,
 					contentTypeCloudEvents,
@@ -80,18 +83,18 @@ func TestWebhookSinkSend(t *testing.T) {
 			t.Parallel()
 			srv := httptest.NewServer(testCase.handler)
 			t.Cleanup(srv.Close)
-			s := NewWebhookSink(srv.URL, testCase.signingKey, 5*time.Second)
-			testCase.assert(t, s.Send(context.Background(), testPayload))
+			s := newWebhookSink(srv.URL, testCase.signingKey, 5*time.Second)
+			testCase.assert(t, s.Send(context.Background(), newTestCloudEvent()))
 		})
 	}
 }
 
 func TestWebhookSinkSendUnreachable(t *testing.T) {
 	t.Parallel()
-	s := NewWebhookSink(
+	s := newWebhookSink(
 		"http://127.0.0.1:1", // nothing listens here
 		nil,
 		time.Second,
 	)
-	require.Error(t, s.Send(context.Background(), []byte("{}")))
+	require.Error(t, s.Send(context.Background(), newTestCloudEvent()))
 }

@@ -18,6 +18,7 @@ import (
 	kargoapi "github.com/akuity/kargo/api/v1alpha1"
 
 	"github.com/shamsalmon/kargo-event-router/api/v1alpha1"
+	"github.com/shamsalmon/kargo-event-router/pkg/payload"
 	"github.com/shamsalmon/kargo-event-router/pkg/sink"
 )
 
@@ -25,40 +26,44 @@ const testProject = "kargo-demo"
 
 var testNow = time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
 
-// fakeSinkFactory records deliveries and can simulate failures per URL.
+// fakeSinkFactory records deliveries and can simulate failures per channel.
 type fakeSinkFactory struct {
-	sends   []fakeSend
-	errByURL map[string]error
+	sends        []fakeSend
+	errByChannel map[string]error
 }
 
 type fakeSend struct {
-	url        string
-	signingKey []byte
-	payload    []byte
+	channel    string
+	secretData map[string][]byte
+	event      *payload.CloudEvent
 }
 
 func (f *fakeSinkFactory) new(
-	url string,
-	signingKey []byte,
+	channel *v1alpha1.MessageChannel,
+	secretData map[string][]byte,
 	_ time.Duration,
-) sink.Sink {
-	return &fakeSink{factory: f, url: url, signingKey: signingKey}
+) (sink.Sink, error) {
+	return &fakeSink{
+		factory:    f,
+		channel:    channel.Name,
+		secretData: secretData,
+	}, nil
 }
 
 type fakeSink struct {
 	factory    *fakeSinkFactory
-	url        string
-	signingKey []byte
+	channel    string
+	secretData map[string][]byte
 }
 
-func (s *fakeSink) Send(_ context.Context, payload []byte) error {
-	if err := s.factory.errByURL[s.url]; err != nil {
+func (s *fakeSink) Send(_ context.Context, evt *payload.CloudEvent) error {
+	if err := s.factory.errByChannel[s.channel]; err != nil {
 		return err
 	}
 	s.factory.sends = append(s.factory.sends, fakeSend{
-		url:        s.url,
-		signingKey: s.signingKey,
-		payload:    payload,
+		channel:    s.channel,
+		secretData: s.secretData,
+		event:      evt,
 	})
 	return nil
 }
@@ -98,32 +103,45 @@ func newTestEvent(modifiers ...func(*corev1.Event)) *corev1.Event {
 	return evt
 }
 
-func newTestRoute(
-	name string,
-	modifiers ...func(*v1alpha1.EventRoute),
-) *v1alpha1.EventRoute {
-	route := &v1alpha1.EventRoute{
+func newTestChannel(name string) *v1alpha1.MessageChannel {
+	return &v1alpha1.MessageChannel{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testProject},
-		Spec: v1alpha1.EventRouteSpec{
-			Webhook: v1alpha1.WebhookSinkConfig{
+		Spec: v1alpha1.MessageChannelSpec{
+			Webhook: &v1alpha1.WebhookChannelConfig{
 				URL: "https://hooks.example.com/" + name,
 			},
 		},
 	}
-	for _, modify := range modifiers {
-		modify(route)
+}
+
+func newTestRouter(
+	name string,
+	channels []string,
+	modifiers ...func(*v1alpha1.EventRouter),
+) *v1alpha1.EventRouter {
+	router := &v1alpha1.EventRouter{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: testProject},
 	}
-	return route
+	for _, channel := range channels {
+		router.Spec.Channels = append(
+			router.Spec.Channels,
+			v1alpha1.ChannelReference{Name: channel, Kind: "MessageChannel"},
+		)
+	}
+	for _, modify := range modifiers {
+		modify(router)
+	}
+	return router
 }
 
 func TestReconcile(t *testing.T) {
 	t.Parallel()
 
 	testCases := []struct {
-		name     string
-		objects  []client.Object
-		errByURL map[string]error
-		assert   func(*testing.T, client.Client, *fakeSinkFactory, error)
+		name         string
+		objects      []client.Object
+		errByChannel map[string]error
+		assert       func(*testing.T, client.Client, *fakeSinkFactory, error)
 	}{
 		{
 			name: "event not found",
@@ -140,7 +158,8 @@ func TestReconcile(t *testing.T) {
 				newTestEvent(func(evt *corev1.Event) {
 					evt.InvolvedObject.APIVersion = "apps/v1"
 				}),
-				newTestRoute("route-a"),
+				newTestRouter("router-a", []string{"channel-a"}),
+				newTestChannel("channel-a"),
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -155,7 +174,8 @@ func TestReconcile(t *testing.T) {
 				newTestEvent(func(evt *corev1.Event) {
 					evt.LastTimestamp = metav1.Time{Time: testNow.Add(-time.Hour)}
 				}),
-				newTestRoute("route-a"),
+				newTestRouter("router-a", []string{"channel-a"}),
+				newTestChannel("channel-a"),
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -165,7 +185,7 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name:    "no routes",
+			name:    "no routers",
 			objects: []client.Object{newTestEvent()},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -175,14 +195,19 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "route with non-matching event type is skipped",
+			name: "router with non-matching type is skipped",
 			objects: []client.Object{
 				newTestEvent(),
-				newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-					route.Spec.EventTypes = []kargoapi.EventType{
-						kargoapi.EventTypeFreightVerificationFailed,
-					}
-				}),
+				newTestRouter(
+					"router-a",
+					[]string{"channel-a"},
+					func(router *v1alpha1.EventRouter) {
+						router.Spec.Types = []kargoapi.EventType{
+							kargoapi.EventTypeFreightVerificationFailed,
+						}
+					},
+				),
+				newTestChannel("channel-a"),
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -192,12 +217,17 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "route with non-matching stage is skipped",
+			name: "router with non-matching when expression is skipped",
 			objects: []client.Object{
 				newTestEvent(),
-				newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-					route.Spec.Stages = []string{"uat"}
-				}),
+				newTestRouter(
+					"router-a",
+					[]string{"channel-a"},
+					func(router *v1alpha1.EventRouter) {
+						router.Spec.When = `event.stageName == 'production'`
+					},
+				),
+				newTestChannel("channel-a"),
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -207,28 +237,53 @@ func TestReconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "matching route receives the event and delivery is recorded",
+			name: "router with broken when expression is skipped without error",
 			objects: []client.Object{
 				newTestEvent(),
-				newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-					route.Spec.EventTypes = []kargoapi.EventType{
-						kargoapi.EventTypePromotionFailed,
-					}
-					route.Spec.Stages = []string{"prod"}
-				}),
+				newTestRouter(
+					"router-a",
+					[]string{"channel-a"},
+					func(router *v1alpha1.EventRouter) {
+						router.Spec.When = `this is not an expression`
+					},
+				),
+				newTestChannel("channel-a"),
+			},
+			assert: func(
+				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
+			) {
+				require.NoError(t, err)
+				require.Empty(t, f.sends)
+			},
+		},
+		{
+			name: "matching router delivers to all channels and records them",
+			objects: []client.Object{
+				newTestEvent(),
+				newTestRouter(
+					"router-a",
+					[]string{"channel-a", "channel-b"},
+					func(router *v1alpha1.EventRouter) {
+						router.Spec.Types = []kargoapi.EventType{
+							kargoapi.EventTypePromotionFailed,
+						}
+						router.Spec.When = `event.stageName == 'prod'`
+					},
+				),
+				newTestChannel("channel-a"),
+				newTestChannel("channel-b"),
 			},
 			assert: func(
 				t *testing.T, c client.Client, f *fakeSinkFactory, err error,
 			) {
 				require.NoError(t, err)
-				require.Len(t, f.sends, 1)
+				require.Len(t, f.sends, 2)
+				require.Equal(t, "channel-a", f.sends[0].channel)
+				require.Equal(t, "channel-b", f.sends[1].channel)
 				require.Equal(
-					t, "https://hooks.example.com/route-a", f.sends[0].url,
-				)
-				require.Contains(
 					t,
-					string(f.sends[0].payload),
 					"io.akuity.kargo.promotion-failed",
+					f.sends[0].event.Type,
 				)
 				evt := &corev1.Event{}
 				require.NoError(t, c.Get(
@@ -237,17 +292,20 @@ func TestReconcile(t *testing.T) {
 					evt,
 				))
 				require.Equal(
-					t, "route-a", evt.Annotations[annotationKeyRoutedTo],
+					t,
+					"router-a/channel-a,router-a/channel-b",
+					evt.Annotations[annotationKeyRoutedTo],
 				)
 			},
 		},
 		{
-			name: "already-delivered route is not delivered to again",
+			name: "already-delivered pair is not delivered to again",
 			objects: []client.Object{
 				newTestEvent(func(evt *corev1.Event) {
-					evt.Annotations[annotationKeyRoutedTo] = "route-a"
+					evt.Annotations[annotationKeyRoutedTo] = "router-a/channel-a"
 				}),
-				newTestRoute("route-a"),
+				newTestRouter("router-a", []string{"channel-a"}),
+				newTestChannel("channel-a"),
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -260,21 +318,20 @@ func TestReconcile(t *testing.T) {
 			name: "partial failure returns an error but records successes",
 			objects: []client.Object{
 				newTestEvent(),
-				newTestRoute("route-a"),
-				newTestRoute("route-b"),
+				newTestRouter("router-a", []string{"channel-a", "channel-b"}),
+				newTestChannel("channel-a"),
+				newTestChannel("channel-b"),
 			},
-			errByURL: map[string]error{
-				"https://hooks.example.com/route-a": errors.New("endpoint down"),
+			errByChannel: map[string]error{
+				"channel-a": errors.New("endpoint down"),
 			},
 			assert: func(
 				t *testing.T, c client.Client, f *fakeSinkFactory, err error,
 			) {
 				require.Error(t, err)
-				require.Contains(t, err.Error(), "route-a")
+				require.Contains(t, err.Error(), "channel-a")
 				require.Len(t, f.sends, 1)
-				require.Equal(
-					t, "https://hooks.example.com/route-b", f.sends[0].url,
-				)
+				require.Equal(t, "channel-b", f.sends[0].channel)
 				evt := &corev1.Event{}
 				require.NoError(t, c.Get(
 					context.Background(),
@@ -282,26 +339,50 @@ func TestReconcile(t *testing.T) {
 					evt,
 				))
 				require.Equal(
-					t, "route-b", evt.Annotations[annotationKeyRoutedTo],
+					t,
+					"router-a/channel-b",
+					evt.Annotations[annotationKeyRoutedTo],
 				)
 			},
 		},
 		{
-			name: "signing key is read from the referenced Secret",
+			name: "missing MessageChannel fails delivery",
 			objects: []client.Object{
 				newTestEvent(),
-				newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-					route.Spec.Webhook.SecretRef = &corev1.LocalObjectReference{
-						Name: "test-secret",
-					}
-				}),
+				newTestRouter("router-a", []string{"does-not-exist"}),
+			},
+			assert: func(
+				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
+			) {
+				require.Error(t, err)
+				require.Empty(t, f.sends)
+			},
+		},
+		{
+			name: "channel Secret is resolved and passed to the sink",
+			objects: []client.Object{
+				newTestEvent(),
+				newTestRouter("router-a", []string{"channel-a"}),
+				&v1alpha1.MessageChannel{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "channel-a",
+						Namespace: testProject,
+					},
+					Spec: v1alpha1.MessageChannelSpec{
+						Slack: &v1alpha1.SlackChannelConfig{
+							SecretRef: corev1.LocalObjectReference{
+								Name: "test-secret",
+							},
+						},
+					},
+				},
 				&corev1.Secret{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-secret",
 						Namespace: testProject,
 					},
 					Data: map[string][]byte{
-						signingKeySecretKey: []byte("test-signing-key"),
+						sink.SecretKeySlackWebhookURL: []byte("https://hooks.slack.com/services/x"),
 					},
 				},
 			},
@@ -311,7 +392,9 @@ func TestReconcile(t *testing.T) {
 				require.NoError(t, err)
 				require.Len(t, f.sends, 1)
 				require.Equal(
-					t, []byte("test-signing-key"), f.sends[0].signingKey,
+					t,
+					[]byte("https://hooks.slack.com/services/x"),
+					f.sends[0].secretData[sink.SecretKeySlackWebhookURL],
 				)
 			},
 		},
@@ -319,11 +402,20 @@ func TestReconcile(t *testing.T) {
 			name: "missing Secret fails delivery",
 			objects: []client.Object{
 				newTestEvent(),
-				newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-					route.Spec.Webhook.SecretRef = &corev1.LocalObjectReference{
-						Name: "does-not-exist",
-					}
-				}),
+				newTestRouter("router-a", []string{"channel-a"}),
+				&v1alpha1.MessageChannel{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "channel-a",
+						Namespace: testProject,
+					},
+					Spec: v1alpha1.MessageChannelSpec{
+						Slack: &v1alpha1.SlackChannelConfig{
+							SecretRef: corev1.LocalObjectReference{
+								Name: "does-not-exist",
+							},
+						},
+					},
+				},
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -338,7 +430,8 @@ func TestReconcile(t *testing.T) {
 				newTestEvent(func(evt *corev1.Event) {
 					evt.Annotations[kargoapi.AnnotationKeyEventPromotionCreateTime] = "not-a-time"
 				}),
-				newTestRoute("route-a"),
+				newTestRouter("router-a", []string{"channel-a"}),
+				newTestChannel("channel-a"),
 			},
 			assert: func(
 				t *testing.T, _ client.Client, f *fakeSinkFactory, err error,
@@ -355,7 +448,7 @@ func TestReconcile(t *testing.T) {
 				WithScheme(newTestScheme(t)).
 				WithObjects(testCase.objects...).
 				Build()
-			factory := &fakeSinkFactory{errByURL: testCase.errByURL}
+			factory := &fakeSinkFactory{errByChannel: testCase.errByChannel}
 			r := newReconciler(c, c, ReconcilerConfigFromEnv())
 			r.newSinkFn = factory.new
 			r.nowFn = func() time.Time { return testNow }
@@ -370,50 +463,55 @@ func TestReconcile(t *testing.T) {
 	}
 }
 
-func TestRouteMatches(t *testing.T) {
+func TestRouterMatches(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {
 		name    string
-		route   *v1alpha1.EventRoute
+		router  *v1alpha1.EventRouter
 		event   *corev1.Event
 		matches bool
 	}{
 		{
 			name:    "no filters matches everything",
-			route:   newTestRoute("route-a"),
+			router:  newTestRouter("router-a", []string{"channel-a"}),
 			event:   newTestEvent(),
 			matches: true,
 		},
 		{
-			name: "stage filter with event lacking a stage annotation",
-			route: newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-				route.Spec.Stages = []string{"prod"}
-			}),
-			event: newTestEvent(func(evt *corev1.Event) {
-				delete(evt.Annotations, kargoapi.AnnotationKeyEventStageName)
-			}),
+			name: "types and when both match",
+			router: newTestRouter(
+				"router-a",
+				[]string{"channel-a"},
+				func(router *v1alpha1.EventRouter) {
+					router.Spec.Types = []kargoapi.EventType{
+						kargoapi.EventTypePromotionCreated,
+						kargoapi.EventTypePromotionFailed,
+					}
+					router.Spec.When = `event.stageName == 'prod' && event.promotionName != ''`
+				},
+			),
+			event:   newTestEvent(),
+			matches: true,
+		},
+		{
+			name: "when references a field the event does not have",
+			router: newTestRouter(
+				"router-a",
+				[]string{"channel-a"},
+				func(router *v1alpha1.EventRouter) {
+					router.Spec.When = `event.freightAlias == 'salty-seahorse'`
+				},
+			),
+			event:   newTestEvent(),
 			matches: false,
-		},
-		{
-			name: "both filters match",
-			route: newTestRoute("route-a", func(route *v1alpha1.EventRoute) {
-				route.Spec.EventTypes = []kargoapi.EventType{
-					kargoapi.EventTypePromotionFailed,
-				}
-				route.Spec.Stages = []string{"uat", "prod"}
-			}),
-			event:   newTestEvent(),
-			matches: true,
 		},
 	}
 	for _, testCase := range testCases {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Parallel()
-			require.Equal(
-				t,
-				testCase.matches,
-				routeMatches(testCase.route, testCase.event),
-			)
+			matched, err := routerMatches(testCase.router, testCase.event)
+			require.NoError(t, err)
+			require.Equal(t, testCase.matches, matched)
 		})
 	}
 }

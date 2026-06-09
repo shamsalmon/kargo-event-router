@@ -1,0 +1,51 @@
+# Post Slack messages via a bot token whenever any Promotion in the
+# kargo-demo Project fails. Unlike an incoming webhook, one token can serve
+# any number of channels -- each MessageChannel picks its own.
+#
+# Prerequisite: create a Slack app with the chat:write scope, install it to
+# your workspace, invite the bot to the target channels, and paste its bot
+# token (xoxb-...) below.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: slack-bot-token
+  namespace: kargo-demo
+stringData:
+  token: xoxb-0000000000-0000000000000-XXXXXXXXXXXXXXXXXXXXXXXX
+---
+apiVersion: kargo-event-router.io/v1alpha1
+kind: MessageChannel
+metadata:
+  name: deployments-slack
+  namespace: kargo-demo
+spec:
+  slack:
+    channel: "#deployments"
+    secretRef:
+      name: slack-bot-token
+---
+apiVersion: kargo-event-router.io/v1alpha1
+kind: MessageChannel
+metadata:
+  name: oncall-slack
+  namespace: kargo-demo
+spec:
+  slack:
+    channel: "#oncall"
+    secretRef:
+      name: slack-bot-token
+---
+# Every failed promotion goes to #deployments; #oncall is added by the
+# production-only router in prod-only-with-expression.yaml.
+apiVersion: kargo-event-router.io/v1alpha1
+kind: EventRouter
+metadata:
+  name: failed-promotions
+  namespace: kargo-demo
+spec:
+  types:
+  - PromotionFailed
+  - PromotionErrored
+  channels:
+  - name: deployments-slack
+    kind: MessageChannel
