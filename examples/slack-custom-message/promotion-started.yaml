@@ -1,0 +1,38 @@
+# Post a custom Slack message whenever a promotion kicks off in the
+# kargo-demo Project, using an output template instead of the default
+# message rendering.
+#
+# Prerequisite: create a Slack app with the chat:write scope, install it to
+# your workspace, invite the bot to the target channel, and paste its bot
+# token (xoxb-...) below.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: slack-bot-token
+  namespace: kargo-demo
+stringData:
+  token: xoxb-0000000000-0000000000000-XXXXXXXXXXXXXXXXXXXXXXXX
+---
+apiVersion: kargo-event-router.io/v1alpha1
+kind: MessageChannel
+metadata:
+  name: slack
+  namespace: kargo-demo
+spec:
+  slack:
+    channel: "#deployments"
+    secretRef:
+      name: slack-bot-token
+---
+apiVersion: kargo-event-router.io/v1alpha1
+kind: EventRouter
+metadata:
+  name: promotion-started
+  namespace: kargo-demo
+spec:
+  types:
+  - PromotionCreated
+  channels:
+  - name: slack
+    kind: MessageChannel
+    output: "Kargo has kicked off promotion to stage: ${{ event.stageName }}."
