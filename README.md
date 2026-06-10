@@ -40,12 +40,25 @@ Kargo controllers / API server          kargo-event-router
 
 ## Installation
 
+With Helm (chart and image are published to GHCR on every release):
+
+```bash
+helm install kargo-event-router \
+  oci://ghcr.io/shamsalmon/charts/kargo-event-router \
+  --namespace kargo-event-router \
+  --create-namespace
+```
+
+See [`charts/kargo-event-router/values.yaml`](charts/kargo-event-router/values.yaml)
+for the available options. Or with plain manifests:
+
 ```bash
 kubectl apply -f config/crd -f config/rbac -f config/manager
 ```
 
 The deployment runs a single replica. If you scale it up, set
-`ENABLE_LEADER_ELECTION=true` to avoid duplicate deliveries.
+`leaderElection.enabled=true` (Helm) or `ENABLE_LEADER_ELECTION=true` to
+avoid duplicate deliveries.
 
 ## Usage
 

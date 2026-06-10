@@ -1,0 +1,39 @@
+image:
+  repository: ghcr.io/shamsalmon/kargo-event-router
+  # Defaults to the chart's appVersion.
+  tag: ""
+  pullPolicy: IfNotPresent
+
+# Running more than one replica requires leaderElection.enabled=true to
+# avoid duplicate deliveries.
+replicaCount: 1
+
+leaderElection:
+  enabled: false
+
+# Events older than this are never delivered. Prevents replaying history
+# when the controller (re)starts.
+maxEventAge: 30m
+
+# Per-request timeout for deliveries.
+sendTimeout: 10s
+
+metrics:
+  enabled: true
+  port: 8080
+  # Add prometheus.io/* scrape annotations to the pod.
+  scrapeAnnotations: true
+
+serviceAccount:
+  create: true
+  # Defaults to the fullname of the release.
+  name: ""
+
+rbac:
+  create: true
+
+podAnnotations: {}
+resources: {}
+nodeSelector: {}
+tolerations: []
+affinity: {}

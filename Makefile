@@ -4,6 +4,7 @@ CONTROLLER_GEN := go run sigs.k8s.io/controller-tools/cmd/controller-gen@v0.19.0
 codegen: ## Regenerate deepcopy code and CRD manifests
 	$(CONTROLLER_GEN) object paths=./api/...
 	$(CONTROLLER_GEN) crd paths=./api/... output:crd:artifacts:config=config/crd
+	cp config/crd/*.yaml charts/kargo-event-router/crds/
 
 .PHONY: lint
 lint: ## Vet Go code

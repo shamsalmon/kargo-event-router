@@ -1,0 +1,50 @@
+name: ci
+
+on:
+  push:
+    branches:
+    - main
+  pull_request:
+    branches:
+    - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-go@v5
+      with:
+        go-version-file: go.mod
+    - name: Check formatting
+      run: test -z "$(gofmt -l .)"
+    - name: Vet
+      run: go vet ./...
+    - name: Test
+      run: go test -race ./...
+    - name: Build
+      run: CGO_ENABLED=0 go build ./...
+
+  lint-chart:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: azure/setup-helm@v4
+    - name: Lint chart
+      run: helm lint charts/kargo-event-router
+    - name: Render chart
+      run: helm template test charts/kargo-event-router >/dev/null
+
+  build-image:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+    - uses: docker/setup-buildx-action@v3
+    - name: Build image (no push)
+      uses: docker/build-push-action@v6
+      with:
+        context: .
+        push: false

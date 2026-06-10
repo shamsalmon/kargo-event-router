@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kargo-event-router.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "kargo-event-router.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kargo-event-router.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kargo-event-router.selectorLabels" . | nindent 8 }}
+      {{- if or .Values.podAnnotations (and .Values.metrics.enabled .Values.metrics.scrapeAnnotations) }}
+      annotations:
+        {{- if and .Values.metrics.enabled .Values.metrics.scrapeAnnotations }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ .Values.metrics.port | quote }}
+        {{- end }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ include "kargo-event-router.serviceAccountName" . }}
+      containers:
+      - name: kargo-event-router
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        env:
+        - name: MAX_EVENT_AGE
+          value: {{ .Values.maxEventAge | quote }}
+        - name: SEND_TIMEOUT
+          value: {{ .Values.sendTimeout | quote }}
+        - name: ENABLE_LEADER_ELECTION
+          value: {{ .Values.leaderElection.enabled | quote }}
+        - name: METRICS_BIND_ADDRESS
+          value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}"0"{{ end }}
+        ports:
+        {{- if .Values.metrics.enabled }}
+        - name: metrics
+          containerPort: {{ .Values.metrics.port }}
+        {{- end }}
+        - name: health
+          containerPort: 8081
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: health
+        readinessProbe:
+          httpGet:
+            path: /readyz
+            port: health
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true
+          runAsNonRoot: true
+          runAsUser: 65534
+          capabilities:
+            drop:
+            - ALL
+        {{- with .Values.resources }}
+        resources:
+          {{- toYaml . | nindent 10 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

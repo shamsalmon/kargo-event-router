@@ -1,0 +1,6 @@
+kargo-event-router {{ .Chart.AppVersion }} has been installed.
+
+Create MessageChannel and EventRouter resources in your Kargo Project
+namespaces to start routing events:
+
+  https://github.com/shamsalmon/kargo-event-router#usage

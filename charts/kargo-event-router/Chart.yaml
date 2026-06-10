@@ -1,0 +1,10 @@
+apiVersion: v2
+name: kargo-event-router
+description: Routes Kargo events to Slack and webhooks
+type: application
+home: https://github.com/shamsalmon/kargo-event-router
+sources:
+- https://github.com/shamsalmon/kargo-event-router
+# version and appVersion are overridden at release time from the git tag.
+version: 0.1.0
+appVersion: 0.1.0
