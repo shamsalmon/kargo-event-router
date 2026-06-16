@@ -51,14 +51,28 @@ var promotionsTotal = prometheus.NewCounterVec(
 	[]string{"project", "stage", "result"},
 )
 
-// freightsTotal counts every Freight event the router dispatches. The result
-// label carries the Freight's outcome (approved, success, failure, error,
-// aborted, inconclusive, unknown), derived from the Kargo event type.
+// freightsTotal counts every non-verification Freight event the router
+// dispatches (currently Freight approvals). Freight verification events are
+// tracked separately by verificationsTotal. The result label carries the
+// event's outcome, derived from the Kargo event type.
 var freightsTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "kargo_event_router_freights_total",
-		Help: "Total number of Freight events dispatched, by project, " +
-			"stage, and result.",
+		Help: "Total number of non-verification Freight events dispatched, " +
+			"by project, stage, and result.",
+	},
+	[]string{"project", "stage", "result"},
+)
+
+// verificationsTotal counts every Freight verification event the router
+// dispatches. The result label carries the verification's outcome (success,
+// failure, error, aborted, inconclusive, unknown), derived from the Kargo
+// event type.
+var verificationsTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		Name: "kargo_event_router_verifications_total",
+		Help: "Total number of Freight verification events dispatched, by " +
+			"project, stage, and result.",
 	},
 	[]string{"project", "stage", "result"},
 )
@@ -73,10 +87,15 @@ var promotionResults = map[kargoapi.EventType]string{
 	kargoapi.EventTypePromotionAborted:   resultAborted,
 }
 
-// freightResults maps each Freight event type to the value of the result
-// label of the freights counter.
+// freightResults maps each non-verification Freight event type to the value
+// of the result label of the freights counter.
 var freightResults = map[kargoapi.EventType]string{
-	kargoapi.EventTypeFreightApproved:                 resultApproved,
+	kargoapi.EventTypeFreightApproved: resultApproved,
+}
+
+// verificationResults maps each Freight verification event type to the value
+// of the result label of the verifications counter.
+var verificationResults = map[kargoapi.EventType]string{
 	kargoapi.EventTypeFreightVerificationSucceeded:    resultSuccess,
 	kargoapi.EventTypeFreightVerificationFailed:       resultFailure,
 	kargoapi.EventTypeFreightVerificationErrored:      resultError,
@@ -93,6 +112,7 @@ func init() {
 		deliveriesTotal,
 		promotionsTotal,
 		freightsTotal,
+		verificationsTotal,
 	)
 }
 
@@ -110,5 +130,9 @@ func recordEventDispatched(evt *corev1.Event) {
 	}
 	if result, ok := freightResults[eventType]; ok {
 		freightsTotal.WithLabelValues(project, stage, result).Inc()
+		return
+	}
+	if result, ok := verificationResults[eventType]; ok {
+		verificationsTotal.WithLabelValues(project, stage, result).Inc()
 	}
 }

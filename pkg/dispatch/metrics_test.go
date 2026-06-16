@@ -60,8 +60,8 @@ func TestDeliveryMetrics(t *testing.T) {
 	))
 }
 
-// Not parallel: asserts on the package-level promotions/freights counters,
-// using channel and event names unique to this test to isolate it.
+// Not parallel: asserts on the package-level promotions/freights/verifications
+// counters, using channel and event names unique to this test to isolate it.
 func TestPromotionFreightMetrics(t *testing.T) {
 	// A successful Promotion delivered to two channels must increment the
 	// promotions counter exactly once, with result derived from the event
@@ -74,6 +74,11 @@ func TestPromotionFreightMetrics(t *testing.T) {
 	freightEvent := newTestEvent(func(e *corev1.Event) {
 		e.Name = "freight-metric-event"
 		e.UID = "freight-metric-uid"
+		e.Reason = string(kargoapi.EventTypeFreightApproved)
+	})
+	verificationEvent := newTestEvent(func(e *corev1.Event) {
+		e.Name = "verification-metric-event"
+		e.UID = "verification-metric-uid"
 		e.Reason = string(kargoapi.EventTypeFreightVerificationFailed)
 	})
 	c := fake.NewClientBuilder().
@@ -81,6 +86,7 @@ func TestPromotionFreightMetrics(t *testing.T) {
 		WithObjects(
 			promoEvent,
 			freightEvent,
+			verificationEvent,
 			newTestRouter("pf-router", []string{"pf-a", "pf-b"}),
 			newTestChannel("pf-a"),
 			newTestChannel("pf-b"),
@@ -100,11 +106,15 @@ func TestPromotionFreightMetrics(t *testing.T) {
 	// Reconciling the same event again (e.g. a resync) must not double count.
 	reconcile("promo-metric-event")
 	reconcile("freight-metric-event")
+	reconcile("verification-metric-event")
 
 	require.Equal(t, float64(1), testutil.ToFloat64(
 		promotionsTotal.WithLabelValues(testProject, "prod", resultSuccess),
 	))
 	require.Equal(t, float64(1), testutil.ToFloat64(
-		freightsTotal.WithLabelValues(testProject, "prod", resultFailure),
+		freightsTotal.WithLabelValues(testProject, "prod", resultApproved),
+	))
+	require.Equal(t, float64(1), testutil.ToFloat64(
+		verificationsTotal.WithLabelValues(testProject, "prod", resultFailure),
 	))
 }

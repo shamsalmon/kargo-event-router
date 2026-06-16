@@ -250,15 +250,17 @@ to the standard controller-runtime and Go runtime metrics:
 |---|---|---|---|
 | `kargo_event_router_deliveries_total` | counter | `project`, `channel`, `channel_type` (`slack`\|`webhook`\|`unknown`), `event_type`, `result` (`success`\|`error`) | Every delivery attempt. |
 | `kargo_event_router_promotions_total` | counter | `project`, `stage`, `result` (`success`\|`failure`\|`error`\|`aborted`\|`created`) | Every Promotion event dispatched, counted once. |
-| `kargo_event_router_freights_total` | counter | `project`, `stage`, `result` (`approved`\|`success`\|`failure`\|`error`\|`aborted`\|`inconclusive`\|`unknown`) | Every Freight event dispatched, counted once. |
+| `kargo_event_router_freights_total` | counter | `project`, `stage`, `result` (`approved`) | Every non-verification Freight event dispatched, counted once. |
+| `kargo_event_router_verifications_total` | counter | `project`, `stage`, `result` (`success`\|`failure`\|`error`\|`aborted`\|`inconclusive`\|`unknown`) | Every Freight verification event dispatched, counted once. |
 
 The `deliveries_total` counter is delivery-centric: it increments once per
-channel per attempt. The `promotions_total` and `freights_total` counters are
-event-centric: each Promotion or Freight event is counted exactly once, when
-it is first dispatched to a channel, regardless of how many channels receive
-it or how many times the reconcile is retried. Their `result` label reflects
-the Kargo event outcome (e.g. a `PromotionSucceeded` event is `result="success"`),
-not the delivery result.
+channel per attempt. The `promotions_total`, `freights_total`, and
+`verifications_total` counters are event-centric: each event is counted
+exactly once, when it is first dispatched to a channel, regardless of how many
+channels receive it or how many times the reconcile is retried. Their `result`
+label reflects the Kargo event outcome (e.g. a `PromotionSucceeded` event is
+`result="success"`), not the delivery result. Every Promotion, Freight, and
+Freight verification event increments exactly one of these three counters.
 
 Useful queries:
 
@@ -276,13 +278,14 @@ rate(kargo_event_router_deliveries_total{result="error"}[10m]) > 0
 sum by (project, stage) (rate(kargo_event_router_promotions_total{result="failure"}[5m]))
 
 # Freight verification outcomes by stage
-sum by (stage, result) (rate(kargo_event_router_freights_total[5m]))
+sum by (stage, result) (rate(kargo_event_router_verifications_total[5m]))
 ```
 
 Note that failed deliveries are retried with backoff, so a single event can
 contribute multiple `result="error"` increments to `deliveries_total` (and
 eventually one `result="success"` if the destination recovers). The
-`promotions_total` and `freights_total` counters are unaffected by retries.
+`promotions_total`, `freights_total`, and `verifications_total` counters are
+unaffected by retries.
 
 ## Caveats
 
