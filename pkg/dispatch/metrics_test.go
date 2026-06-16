@@ -8,6 +8,7 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -56,5 +57,54 @@ func TestDeliveryMetrics(t *testing.T) {
 		deliveriesTotal.WithLabelValues(
 			testProject, "metrics-fail", channelTypeWebhook, eventType, resultError,
 		),
+	))
+}
+
+// Not parallel: asserts on the package-level promotions/freights counters,
+// using channel and event names unique to this test to isolate it.
+func TestPromotionFreightMetrics(t *testing.T) {
+	// A successful Promotion delivered to two channels must increment the
+	// promotions counter exactly once, with result derived from the event
+	// type and stage taken from the event's annotations.
+	promoEvent := newTestEvent(func(e *corev1.Event) {
+		e.Name = "promo-metric-event"
+		e.UID = "promo-metric-uid"
+		e.Reason = string(kargoapi.EventTypePromotionSucceeded)
+	})
+	freightEvent := newTestEvent(func(e *corev1.Event) {
+		e.Name = "freight-metric-event"
+		e.UID = "freight-metric-uid"
+		e.Reason = string(kargoapi.EventTypeFreightVerificationFailed)
+	})
+	c := fake.NewClientBuilder().
+		WithScheme(newTestScheme(t)).
+		WithObjects(
+			promoEvent,
+			freightEvent,
+			newTestRouter("pf-router", []string{"pf-a", "pf-b"}),
+			newTestChannel("pf-a"),
+			newTestChannel("pf-b"),
+		).
+		Build()
+	r := newReconciler(c, c, ReconcilerConfigFromEnv())
+	r.newSinkFn = (&fakeSinkFactory{}).new
+	r.nowFn = func() time.Time { return testNow }
+
+	reconcile := func(name string) {
+		_, err := r.Reconcile(context.Background(), ctrl.Request{
+			NamespacedName: types.NamespacedName{Namespace: testProject, Name: name},
+		})
+		require.NoError(t, err)
+	}
+	reconcile("promo-metric-event")
+	// Reconciling the same event again (e.g. a resync) must not double count.
+	reconcile("promo-metric-event")
+	reconcile("freight-metric-event")
+
+	require.Equal(t, float64(1), testutil.ToFloat64(
+		promotionsTotal.WithLabelValues(testProject, "prod", resultSuccess),
+	))
+	require.Equal(t, float64(1), testutil.ToFloat64(
+		freightsTotal.WithLabelValues(testProject, "prod", resultFailure),
 	))
 }

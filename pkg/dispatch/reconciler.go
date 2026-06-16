@@ -177,6 +177,14 @@ func (r *reconciler) Reconcile(
 	// Deliver to each pending channel, marking the event after each
 	// successful delivery so a retry triggered by one channel's failure
 	// does not re-deliver to channels that already succeeded.
+	//
+	// The promotion/freight counter must reflect each event once, not once
+	// per channel or once per retry. firstDispatch is true only when nothing
+	// has been delivered for this event before, so recording the event after
+	// its first successful delivery below counts it exactly once over the
+	// event's lifetime.
+	firstDispatch := len(delivered) == 0
+	dispatched := false
 	var errs []error
 	for _, d := range pending {
 		// An empty text means the channel's sink uses its default rendering.
@@ -222,11 +230,15 @@ func (r *reconciler) Reconcile(
 			"router", d.router,
 			"channel", d.channel,
 		)
+		dispatched = true
 		if err = r.markRouted(ctx, evt, d.key()); err != nil {
 			errs = append(errs, fmt.Errorf(
 				"error marking event as routed to %q: %w", d.key(), err,
 			))
 		}
+	}
+	if firstDispatch && dispatched {
+		recordEventDispatched(evt)
 	}
 	return ctrl.Result{}, errors.Join(errs...)
 }
