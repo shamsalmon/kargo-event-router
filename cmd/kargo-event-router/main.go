@@ -48,6 +48,10 @@ func run() error {
 	if err := v1alpha1.AddToScheme(scheme); err != nil {
 		return fmt.Errorf("error adding kargo-event-router API to scheme: %w", err)
 	}
+	// Registered so the optional metrics initializer can watch Kargo Stages.
+	if err := kargoapi.AddToScheme(scheme); err != nil {
+		return fmt.Errorf("error adding Kargo API to scheme: %w", err)
+	}
 
 	mgr, err := ctrl.NewManager(
 		ctrl.GetConfigOrDie(),
@@ -76,11 +80,21 @@ func run() error {
 		return fmt.Errorf("error initializing controller manager: %w", err)
 	}
 
+	reconcilerCfg := dispatch.ReconcilerConfigFromEnv()
 	if err = dispatch.SetupReconcilerWithManager(
 		mgr,
-		dispatch.ReconcilerConfigFromEnv(),
+		reconcilerCfg,
 	); err != nil {
 		return fmt.Errorf("error setting up event dispatch reconciler: %w", err)
+	}
+
+	// Opt-in: pre-initialize the events counter to 0 for every Kargo Stage.
+	// A no-op when InitializeMetrics is false.
+	if err = dispatch.SetupMetricsInitializerWithManager(
+		mgr,
+		reconcilerCfg.InitializeMetrics,
+	); err != nil {
+		return fmt.Errorf("error setting up metrics initializer: %w", err)
 	}
 
 	if err = mgr.AddHealthzCheck("healthz", healthz.Ping); err != nil {

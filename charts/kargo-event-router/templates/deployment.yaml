@@ -39,6 +39,10 @@ spec:
           value: {{ .Values.leaderElection.enabled | quote }}
         - name: METRICS_BIND_ADDRESS
           value: {{ if .Values.metrics.enabled }}{{ printf ":%v" .Values.metrics.port | quote }}{{ else }}"0"{{ end }}
+        {{- if .Values.metrics.initialize }}
+        - name: INITIALIZE_METRICS
+          value: "true"
+        {{- end }}
         ports:
         {{- if .Values.metrics.enabled }}
         - name: metrics

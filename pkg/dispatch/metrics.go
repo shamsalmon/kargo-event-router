@@ -8,16 +8,10 @@ import (
 	kargoapi "github.com/akuity/kargo/api/v1alpha1"
 )
 
-// Values of the result label.
+// Values of the result label of the deliveries counter.
 const (
-	resultSuccess      = "success"
-	resultError        = "error"
-	resultFailure      = "failure"
-	resultAborted      = "aborted"
-	resultCreated      = "created"
-	resultApproved     = "approved"
-	resultInconclusive = "inconclusive"
-	resultUnknown      = "unknown"
+	resultSuccess = "success"
+	resultError   = "error"
 )
 
 // Values of the channel_type label of the deliveries counter.
@@ -29,110 +23,73 @@ const (
 
 // deliveriesTotal counts every delivery attempt. "Messages sent
 // successfully" is result="success"; failed Slack messages or webhooks are
-// result="error" with the corresponding channel_type.
+// result="error" with the corresponding channel_type. The stage label is the
+// Kargo Stage the event relates to, or empty for events that carry no stage.
 var deliveriesTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
 		Name: "kargo_event_router_deliveries_total",
-		Help: "Total number of event delivery attempts, by project, " +
+		Help: "Total number of event delivery attempts, by project, stage, " +
 			"channel, channel type, event type, and result.",
 	},
-	[]string{"project", "channel", "channel_type", "event_type", "result"},
+	[]string{"project", "stage", "channel", "channel_type", "event_type", "result"},
 )
 
-// promotionsTotal counts every Promotion event the router dispatches. The
-// result label carries the Promotion's outcome (success, failure, error,
-// aborted, created), derived from the Kargo event type.
-var promotionsTotal = prometheus.NewCounterVec(
+// eventsTotal counts Kargo events the router handles, independent of how many
+// channels they are delivered to. Unlike deliveriesTotal it carries no channel
+// or result dimension: it is incremented exactly once per event, by project,
+// stage, and event type.
+var eventsTotal = prometheus.NewCounterVec(
 	prometheus.CounterOpts{
-		Name: "kargo_event_router_promotions_total",
-		Help: "Total number of Promotion events dispatched, by project, " +
-			"stage, and result.",
+		Name: "kargo_event_router_events_total",
+		Help: "Total number of Kargo events handled, by project, stage, and " +
+			"event type. Counted once per event, regardless of channels.",
 	},
-	[]string{"project", "stage", "result"},
+	[]string{"project", "stage", "event_type"},
 )
 
-// freightsTotal counts every non-verification Freight event the router
-// dispatches (currently Freight approvals). Freight verification events are
-// tracked separately by verificationsTotal. The result label carries the
-// event's outcome, derived from the Kargo event type.
-var freightsTotal = prometheus.NewCounterVec(
-	prometheus.CounterOpts{
-		Name: "kargo_event_router_freights_total",
-		Help: "Total number of non-verification Freight events dispatched, " +
-			"by project, stage, and result.",
-	},
-	[]string{"project", "stage", "result"},
-)
-
-// verificationsTotal counts every Freight verification event the router
-// dispatches. The result label carries the verification's outcome (success,
-// failure, error, aborted, inconclusive, unknown), derived from the Kargo
-// event type.
-var verificationsTotal = prometheus.NewCounterVec(
-	prometheus.CounterOpts{
-		Name: "kargo_event_router_verifications_total",
-		Help: "Total number of Freight verification events dispatched, by " +
-			"project, stage, and result.",
-	},
-	[]string{"project", "stage", "result"},
-)
-
-// promotionResults maps each Promotion event type to the value of the result
-// label of the promotions counter.
-var promotionResults = map[kargoapi.EventType]string{
-	kargoapi.EventTypePromotionCreated:   resultCreated,
-	kargoapi.EventTypePromotionSucceeded: resultSuccess,
-	kargoapi.EventTypePromotionFailed:    resultFailure,
-	kargoapi.EventTypePromotionErrored:   resultError,
-	kargoapi.EventTypePromotionAborted:   resultAborted,
-}
-
-// freightResults maps each non-verification Freight event type to the value
-// of the result label of the freights counter.
-var freightResults = map[kargoapi.EventType]string{
-	kargoapi.EventTypeFreightApproved: resultApproved,
-}
-
-// verificationResults maps each Freight verification event type to the value
-// of the result label of the verifications counter.
-var verificationResults = map[kargoapi.EventType]string{
-	kargoapi.EventTypeFreightVerificationSucceeded:    resultSuccess,
-	kargoapi.EventTypeFreightVerificationFailed:       resultFailure,
-	kargoapi.EventTypeFreightVerificationErrored:      resultError,
-	kargoapi.EventTypeFreightVerificationAborted:      resultAborted,
-	kargoapi.EventTypeFreightVerificationInconclusive: resultInconclusive,
-	kargoapi.EventTypeFreightVerificationUnknown:      resultUnknown,
+// allEventTypes is the set of Kargo event types the events counter is
+// pre-initialized for, so a 0 series exists for every project/stage/event type
+// before any event arrives.
+var allEventTypes = []kargoapi.EventType{
+	kargoapi.EventTypePromotionCreated,
+	kargoapi.EventTypePromotionSucceeded,
+	kargoapi.EventTypePromotionFailed,
+	kargoapi.EventTypePromotionErrored,
+	kargoapi.EventTypePromotionAborted,
+	kargoapi.EventTypeFreightApproved,
+	kargoapi.EventTypeFreightVerificationSucceeded,
+	kargoapi.EventTypeFreightVerificationFailed,
+	kargoapi.EventTypeFreightVerificationErrored,
+	kargoapi.EventTypeFreightVerificationAborted,
+	kargoapi.EventTypeFreightVerificationInconclusive,
+	kargoapi.EventTypeFreightVerificationUnknown,
 }
 
 func init() {
 	// Registering with controller-runtime's registry exposes the metrics on
 	// the manager's metrics endpoint alongside the built-in controller
 	// metrics.
-	ctrlmetrics.Registry.MustRegister(
-		deliveriesTotal,
-		promotionsTotal,
-		freightsTotal,
-		verificationsTotal,
-	)
+	ctrlmetrics.Registry.MustRegister(deliveriesTotal, eventsTotal)
 }
 
-// recordEventDispatched increments the promotions or freights counter for the
-// given event. Events whose type is neither a Promotion nor a Freight event
-// are ignored. project is the event's namespace and stage is taken from the
-// event's annotations; result is derived from the event type.
-func recordEventDispatched(evt *corev1.Event) {
-	eventType := kargoapi.EventType(evt.Reason)
-	project := evt.Namespace
-	stage := evt.Annotations[kargoapi.AnnotationKeyEventStageName]
-	if result, ok := promotionResults[eventType]; ok {
-		promotionsTotal.WithLabelValues(project, stage, result).Inc()
-		return
-	}
-	if result, ok := freightResults[eventType]; ok {
-		freightsTotal.WithLabelValues(project, stage, result).Inc()
-		return
-	}
-	if result, ok := verificationResults[eventType]; ok {
-		verificationsTotal.WithLabelValues(project, stage, result).Inc()
+// recordEvent increments the events counter for the given event, by project
+// (the event's namespace), stage (from the event's annotations), and event
+// type (the event's reason).
+func recordEvent(evt *corev1.Event) {
+	eventsTotal.WithLabelValues(
+		evt.Namespace,
+		evt.Annotations[kargoapi.AnnotationKeyEventStageName],
+		evt.Reason,
+	).Inc()
+}
+
+// initEventMetrics creates the events counter at 0 for the given project and
+// stage across every known event type. Referencing a child series with
+// WithLabelValues instantiates it at 0 without incrementing, so the series
+// exists in /metrics before any event arrives. This is idempotent: it never
+// resets an already-incremented counter.
+func initEventMetrics(project, stage string) {
+	for _, eventType := range allEventTypes {
+		eventsTotal.WithLabelValues(project, stage, string(eventType))
 	}
 }

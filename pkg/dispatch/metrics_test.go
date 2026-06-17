@@ -47,74 +47,55 @@ func TestDeliveryMetrics(t *testing.T) {
 	})
 	require.Error(t, err)
 
+	// The test event carries a stage-name annotation of "prod", which becomes
+	// the stage label.
 	eventType := string(kargoapi.EventTypePromotionFailed)
 	require.Equal(t, float64(1), testutil.ToFloat64(
 		deliveriesTotal.WithLabelValues(
-			testProject, "metrics-ok", channelTypeWebhook, eventType, resultSuccess,
+			testProject, "prod", "metrics-ok", channelTypeWebhook, eventType, resultSuccess,
 		),
 	))
 	require.Equal(t, float64(1), testutil.ToFloat64(
 		deliveriesTotal.WithLabelValues(
-			testProject, "metrics-fail", channelTypeWebhook, eventType, resultError,
+			testProject, "prod", "metrics-fail", channelTypeWebhook, eventType, resultError,
 		),
 	))
 }
 
-// Not parallel: asserts on the package-level promotions/freights/verifications
-// counters, using channel and event names unique to this test to isolate it.
-func TestPromotionFreightMetrics(t *testing.T) {
-	// A successful Promotion delivered to two channels must increment the
-	// promotions counter exactly once, with result derived from the event
-	// type and stage taken from the event's annotations.
-	promoEvent := newTestEvent(func(e *corev1.Event) {
-		e.Name = "promo-metric-event"
-		e.UID = "promo-metric-uid"
+// Not parallel: asserts on the package-level events counter, using event names
+// unique to this test to isolate it from other tests.
+func TestEventsMetric(t *testing.T) {
+	event := newTestEvent(func(e *corev1.Event) {
+		e.Name = "events-metric"
+		e.UID = "events-metric-uid"
 		e.Reason = string(kargoapi.EventTypePromotionSucceeded)
-	})
-	freightEvent := newTestEvent(func(e *corev1.Event) {
-		e.Name = "freight-metric-event"
-		e.UID = "freight-metric-uid"
-		e.Reason = string(kargoapi.EventTypeFreightApproved)
-	})
-	verificationEvent := newTestEvent(func(e *corev1.Event) {
-		e.Name = "verification-metric-event"
-		e.UID = "verification-metric-uid"
-		e.Reason = string(kargoapi.EventTypeFreightVerificationFailed)
 	})
 	c := fake.NewClientBuilder().
 		WithScheme(newTestScheme(t)).
 		WithObjects(
-			promoEvent,
-			freightEvent,
-			verificationEvent,
-			newTestRouter("pf-router", []string{"pf-a", "pf-b"}),
-			newTestChannel("pf-a"),
-			newTestChannel("pf-b"),
+			event,
+			newTestRouter("events-router", []string{"events-a", "events-b"}),
+			newTestChannel("events-a"),
+			newTestChannel("events-b"),
 		).
 		Build()
 	r := newReconciler(c, c, ReconcilerConfigFromEnv())
 	r.newSinkFn = (&fakeSinkFactory{}).new
 	r.nowFn = func() time.Time { return testNow }
 
-	reconcile := func(name string) {
+	reconcile := func() {
 		_, err := r.Reconcile(context.Background(), ctrl.Request{
-			NamespacedName: types.NamespacedName{Namespace: testProject, Name: name},
+			NamespacedName: types.NamespacedName{Namespace: testProject, Name: "events-metric"},
 		})
 		require.NoError(t, err)
 	}
-	reconcile("promo-metric-event")
-	// Reconciling the same event again (e.g. a resync) must not double count.
-	reconcile("promo-metric-event")
-	reconcile("freight-metric-event")
-	reconcile("verification-metric-event")
+	reconcile()
+	// Reconciling again (e.g. a resync) must not double count, even though the
+	// event fanned out to two channels.
+	reconcile()
 
+	eventType := string(kargoapi.EventTypePromotionSucceeded)
 	require.Equal(t, float64(1), testutil.ToFloat64(
-		promotionsTotal.WithLabelValues(testProject, "prod", resultSuccess),
-	))
-	require.Equal(t, float64(1), testutil.ToFloat64(
-		freightsTotal.WithLabelValues(testProject, "prod", resultApproved),
-	))
-	require.Equal(t, float64(1), testutil.ToFloat64(
-		verificationsTotal.WithLabelValues(testProject, "prod", resultFailure),
+		eventsTotal.WithLabelValues(testProject, "prod", eventType),
 	))
 }

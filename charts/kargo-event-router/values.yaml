@@ -23,6 +23,11 @@ metrics:
   port: 8080
   # Add prometheus.io/* scrape annotations to the pod.
   scrapeAnnotations: true
+  # Optionally pre-initialize the events counter to 0 for every Kargo Stage
+  # (across all event types). This makes the series exist before the first
+  # event so rate()/increase() and dashboards have no startup gap. When true,
+  # the chart also grants the controller read access to Kargo Stages.
+  initialize: false
 
 serviceAccount:
   create: true
