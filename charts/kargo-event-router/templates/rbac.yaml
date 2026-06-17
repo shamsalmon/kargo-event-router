@@ -30,6 +30,17 @@ rules:
   - get
   - list
   - watch
+{{- if .Values.metrics.initialize }}
+# Required by the metrics initializer to read Kargo Stages.
+- apiGroups:
+  - kargo.akuity.io
+  resources:
+  - stages
+  verbs:
+  - get
+  - list
+  - watch
+{{- end }}
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

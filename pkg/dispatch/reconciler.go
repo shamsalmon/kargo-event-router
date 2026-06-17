@@ -42,6 +42,10 @@ type ReconcilerConfig struct {
 	MaxEventAge time.Duration `envconfig:"MAX_EVENT_AGE" default:"30m"`
 	// SendTimeout is the per-request timeout for deliveries to channels.
 	SendTimeout time.Duration `envconfig:"SEND_TIMEOUT" default:"10s"`
+	// InitializeMetrics, when true, pre-initializes the events counter to 0
+	// for every Stage of every Kargo Project across all event types, so the
+	// series exist before the first event is handled.
+	InitializeMetrics bool `envconfig:"INITIALIZE_METRICS" default:"false"`
 }
 
 // ReconcilerConfigFromEnv returns a ReconcilerConfig populated from
@@ -178,11 +182,15 @@ func (r *reconciler) Reconcile(
 	// successful delivery so a retry triggered by one channel's failure
 	// does not re-deliver to channels that already succeeded.
 	//
-	// The promotion/freight counter must reflect each event once, not once
-	// per channel or once per retry. firstDispatch is true only when nothing
-	// has been delivered for this event before, so recording the event after
-	// its first successful delivery below counts it exactly once over the
-	// event's lifetime.
+	// The stage label is identical for every delivery of this event, so it is
+	// resolved once here. It is empty for events that carry no stage.
+	stage := evt.Annotations[kargoapi.AnnotationKeyEventStageName]
+	// The events counter reflects each event once, not once per channel or per
+	// retry. firstDispatch is true only when nothing has been delivered for
+	// this event before, so recording it after its first successful delivery
+	// below counts it exactly once over the event's lifetime -- idempotent
+	// across retries and restarts, since delivered is read from the persisted
+	// routed-to annotation.
 	firstDispatch := len(delivered) == 0
 	dispatched := false
 	var errs []error
@@ -212,6 +220,7 @@ func (r *reconciler) Reconcile(
 		}
 		deliveriesTotal.WithLabelValues(
 			evt.Namespace,
+			stage,
 			d.channel,
 			channelType,
 			evt.Reason,
@@ -238,7 +247,7 @@ func (r *reconciler) Reconcile(
 		}
 	}
 	if firstDispatch && dispatched {
-		recordEventDispatched(evt)
+		recordEvent(evt)
 	}
 	return ctrl.Result{}, errors.Join(errs...)
 }

@@ -239,6 +239,7 @@ echo -n "$BODY" | openssl dgst -sha256 -hmac "$SIGNING_KEY"
 | `METRICS_BIND_ADDRESS` | `:8080` | Bind address for the Prometheus metrics endpoint. Set to `0` to disable. |
 | `HEALTH_PROBE_BIND_ADDRESS` | `:8081` | Bind address for `/healthz` and `/readyz`. |
 | `ENABLE_LEADER_ELECTION` | `false` | Enable leader election when running more than one replica. |
+| `INITIALIZE_METRICS` | `false` | Pre-initialize the events counter to `0` for every Kargo Stage. See [Metrics](#metrics). Requires read access to Kargo Stages. |
 
 ## Metrics
 
@@ -248,19 +249,16 @@ to the standard controller-runtime and Go runtime metrics:
 
 | Metric | Type | Labels | Description |
 |---|---|---|---|
-| `kargo_event_router_deliveries_total` | counter | `project`, `channel`, `channel_type` (`slack`\|`webhook`\|`unknown`), `event_type`, `result` (`success`\|`error`) | Every delivery attempt. |
-| `kargo_event_router_promotions_total` | counter | `project`, `stage`, `result` (`success`\|`failure`\|`error`\|`aborted`\|`created`) | Every Promotion event dispatched, counted once. |
-| `kargo_event_router_freights_total` | counter | `project`, `stage`, `result` (`approved`) | Every non-verification Freight event dispatched, counted once. |
-| `kargo_event_router_verifications_total` | counter | `project`, `stage`, `result` (`success`\|`failure`\|`error`\|`aborted`\|`inconclusive`\|`unknown`) | Every Freight verification event dispatched, counted once. |
+| `kargo_event_router_deliveries_total` | counter | `project`, `stage`, `channel`, `channel_type` (`slack`\|`webhook`\|`unknown`), `event_type`, `result` (`success`\|`error`) | Every delivery attempt. `stage` is the Kargo Stage the event relates to, or empty for events that carry no stage. |
+| `kargo_event_router_events_total` | counter | `project`, `stage`, `event_type` | Each handled event, counted once regardless of how many channels it is delivered to. No channel or result dimension. |
 
-The `deliveries_total` counter is delivery-centric: it increments once per
-channel per attempt. The `promotions_total`, `freights_total`, and
-`verifications_total` counters are event-centric: each event is counted
-exactly once, when it is first dispatched to a channel, regardless of how many
-channels receive it or how many times the reconcile is retried. Their `result`
-label reflects the Kargo event outcome (e.g. a `PromotionSucceeded` event is
-`result="success"`), not the delivery result. Every Promotion, Freight, and
-Freight verification event increments exactly one of these three counters.
+`deliveries_total` is delivery-centric: it increments once per channel per
+attempt, so a flaky channel and its retries are visible. `events_total` is
+event-centric: it increments exactly once per event (at first dispatch),
+independent of channel fan-out and idempotent across retries and restarts. In
+both, `event_type` is the Kargo event reason (e.g. `PromotionFailed`,
+`FreightVerificationFailed`), so promotions, freights, and verifications are
+distinguished by that label rather than by separate metrics.
 
 Useful queries:
 
@@ -274,18 +272,35 @@ sum by (project, channel) (rate(kargo_event_router_deliveries_total{channel_type
 # Alert when any channel is failing
 rate(kargo_event_router_deliveries_total{result="error"}[10m]) > 0
 
-# Promotion failure rate by stage
-sum by (project, stage) (rate(kargo_event_router_promotions_total{result="failure"}[5m]))
-
-# Freight verification outcomes by stage
-sum by (stage, result) (rate(kargo_event_router_verifications_total[5m]))
+# Promotion-failure event rate by stage (independent of channels)
+sum by (project, stage) (rate(kargo_event_router_events_total{event_type="PromotionFailed"}[5m]))
 ```
 
 Note that failed deliveries are retried with backoff, so a single event can
 contribute multiple `result="error"` increments to `deliveries_total` (and
-eventually one `result="success"` if the destination recovers). The
-`promotions_total`, `freights_total`, and `verifications_total` counters are
-unaffected by retries.
+eventually one `result="success"` if the destination recovers). `events_total`
+is unaffected by retries.
+
+### Pre-initializing the events counter
+
+A counter series only appears in `/metrics` after its first increment, which
+makes `rate()`/`increase()` miss the first event and leaves dashboards showing
+"no data" until something happens. Set `INITIALIZE_METRICS=true`
+(`metrics.initialize=true` in Helm) to create `events_total` at `0` on startup
+for every `(stage, event_type)`, discovered by watching the cluster's Kargo
+Stages (each Stage's namespace is its project):
+
+```
+kargo_event_router_events_total{project="kargo-fes", stage="prod", event_type="PromotionSucceeded"} 0
+kargo_event_router_events_total{project="kargo-fes", stage="prod", event_type="PromotionFailed"} 0
+...one series per event type, per Stage of every Project
+```
+
+Stages created after startup are initialized too, as their watch events fire.
+The controller needs read access to Kargo Stages for this; the Helm chart
+grants it automatically when `metrics.initialize=true`. Note that only events
+the router actually dispatches increment the counter, so an event type that
+never matches an `EventRouter` stays at `0`.
 
 ## Caveats
 
